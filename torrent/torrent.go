@@ -15,7 +15,7 @@ type Torrent struct {
 	Announce   string
 	InfoHash   [20]byte
 	FileName   string
-	FileLength string
+	FileLength int
 }
 
 // bencodeInfo for bencode-go package
@@ -58,7 +58,6 @@ func ReadTorrentFile(filePath string) (Torrent, error) {
 
 // TODO - implement me!
 func createTorrent(output bencodeOutput) (Torrent, error) {
-	newTorrent := Torrent{}
 	var infoHashes string = output.Info.Pieces
 	// assert that infoHashes is multiple of 20
 	if len(infoHashes)%20 != 0 {
@@ -67,8 +66,12 @@ func createTorrent(output bencodeOutput) (Torrent, error) {
 	// generate 20 byte SHA1 hash, to be sent to tracker server
 	var buf bytes.Buffer
 	bencode.Marshal(&buf, output.Info)
-	fmt.Printf("%x", sha1.Sum([]byte(buf.String())))
-	// fmt.Printf("%x", sha1.Sum([]byte("a")))
-
+	// fmt.Printf("%x", sha1.Sum([]byte(buf.String())))
+	newTorrent := Torrent{
+		InfoHash:   sha1.Sum([]byte(buf.String())),
+		Announce:   output.Announce,
+		FileName:   output.Info.Name,
+		FileLength: output.Info.Length,
+	}
 	return newTorrent, nil
 }
