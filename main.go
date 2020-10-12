@@ -26,5 +26,5 @@ func main() {
 	client.ConnectTracker()
 
 	// Connect to Peers
-	
+	client.ConnectPeers()
 }
