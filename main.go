@@ -3,20 +3,17 @@ package main
 import (
 	"github.com/dave2000sang/torrent-go/client"
 	"github.com/dave2000sang/torrent-go/torrent"
-	// "fmt"
+	"log"
 )
 
-func checkError(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
+
 
 func main() {
 	file := "example_torrents/ubuntu-20.04.1-desktop-amd64.iso.torrent"
 	// Create a new Client
 	client := client.NewClient()
 	curTorrent, err := torrent.ReadTorrentFile(file)
+	log.Println("Num pieces: ", curTorrent.NumPieces)
 	if err != nil {
 		panic(err)
 	}
