@@ -22,6 +22,7 @@ func main() {
 
 	// Connect to Peers
 	client.ConnectPeers()
-
+	
+	// Begin downloading pieces
 	client.DownloadPieces()
 }

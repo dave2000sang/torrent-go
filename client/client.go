@@ -2,6 +2,8 @@ package client
 
 import (
 	"crypto/sha1"
+	"errors"
+
 	// "io/ioutil"
 	"encoding/binary"
 	"log"
@@ -112,31 +114,22 @@ func (client *Client) ConnectPeers() {
 
 // DownloadPieces downloads pieces from peers
 func (client *Client) DownloadPieces() {
-	for _, peer := range client.Peerlist {
+	for _, peer := range client.PeerList {
 		if !peer.Status.PeerChocking && peer.Status.AmInterested {
 			// peer is ready to receive requests for pieces
-			finished, err := client.startDownload(peer, conn)
+			err := client.startDownload(peer)
 			if err != nil {
 				log.Println(err)
-				conn.Close()
 				continue
 			}
-			if (finished) {
-				// Finished downloading all pieces
-				conn.Close()
-				break
-			}
-		}
-		// conn exists (not nil)
-		// defer conn.Close()
-		conn.Close()
 
+			// TODO - check if all pieces finished downloading
+		}
 	}
 }
 
-
 // startDownload begins downloading pieces from peer
-func (client *Client) startDownload(peer *peer.Peer) (bool, error) {
+func (client *Client) startDownload(peer *peer.Peer) error {
 	// First, form tcp connection with peer
 	conn, err := peer.TCPConnect()
 	if err != nil {
@@ -144,33 +137,47 @@ func (client *Client) startDownload(peer *peer.Peer) (bool, error) {
 	}
 	defer conn.Close()
 
-	blockSize := 16384 			// Block size = 16KB
+	blockSize := 16384 // Block size = 16KB
 	requestMsg := make([]byte, 17)
 	binary.BigEndian.PutUint32(requestMsg[:4], 19)
-	pieceIndex, blockOffset := client.getNextPieceIndex()
+	pieceIndex, blockOffset, piece := client.getNextPieceIndex()
 	if pieceIndex == -1 {
-		return true, nil
+		// Either all pieces finished, or this peer does not have any pieces we need
+		return nil
 	}
 	copy(requestMsg[4:5], []byte{byte(1)})
 	binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
 	binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
 	binary.BigEndian.PutUint32(requestMsg[13:17], uint32(blockSize))
-	
-	// Send peer a REQUEST message	
-	_, err := conn.Write(requestMsg)
+	// Send peer a REQUEST message
+	_, err = conn.Write(requestMsg)
 	if err != nil {
-		return false, err
+		return err
 	}
-	peer.HandleMessages(conn, 1, requestMsg)
-	return false, nil
+	// Parse peer response
+	msgID, msgPayload, err := peer.ReadMessage(conn)
+	if err != nil {
+		return err
+	}
+	if msgID != 9 {
+		return errors.New("Peer did not respond with piece message")
+	}
+	peer.HandlePieceMessage(msgPayload, requestMsg[5:], piece)
+	return nil
 }
 
-// getNextPieceIndex finds the next incomplete piece to download
-func (client *Client) getNextPieceIndex() (int, int) {
+// getNextPieceIndex finds the next incomplete piece that peer doesn't have to download
+func (client *Client) getNextPieceIndex(peer *peer.Peer) (int, int, *piece.Piece) {
 	for _, piece := range client.Pieces {
 		if !piece.IsComplete {
-			return piece.Index, len(piece.Blocks)
+			pieceIndex = piece.Index
+			byteIndex := pieceIndex / 8
+			byteOffset = pieceIndex % 8
+			// Check that peer has the piece
+			if peer.HavePieces[byteIndex] & (1 << byteOffset) {
+				return pieceIndex, len(piece.Blocks), piece
+			}
 		}
+		return -1, 0, nil
 	}
-	return -1, 0
 }

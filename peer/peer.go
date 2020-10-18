@@ -10,10 +10,11 @@ import (
 	"net"
 	"strconv"
 	"time"
-
+	"torrent-go/piece"
 	"torrent-go/utils"
 )
 
+// MaxListenAttempts before timing out
 const MaxListenAttempts = 3
 
 // Peer represents a seeder
@@ -144,19 +145,34 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 		return errors.New("ERROR: response info hash does not match")
 	}
 	log.Println("Received handshake from peer")
-	err = peer.HandleMessages(conn, 0, nil)
-	if err != nil {
-		conn.Close()
-		return err
+
+	listenAttempt := 0
+	for {
+		if listenAttempt >= MaxListenAttempts {
+			return errors.New("Max attempts exceeded reading messages skipping")
+		}
+		msgID, msgPayload, err := peer.ReadMessage(conn)
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		err = peer.HandleMessage(msgID, msgPayload, nil)
+		if err != nil {
+			return err
+		}
+		// Break if peer unchokes
+		if !peer.Status.PeerChocking {
+			log.Println("Peer unchocked me!")
+			break
+		}
+		// continue listening for messages until unchokes
+		listenAttempt++
 	}
 	return nil
 }
 
-// HandleMessages reads messages from peer
-func (peer *Peer) HandleMessages(conn *net.TCPConn, listenAttempt int, requestMsg []byte) error {
-	if listenAttempt >= MaxListenAttempts {
-		return errors.New("Max attempts exceeded reading messages skipping")
-	}
+// ReadMessage reads messages from peer and returns message ID and payload
+func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 	var (
 		msgLength     [4]byte
 		payloadLength uint32
@@ -167,7 +183,7 @@ func (peer *Peer) HandleMessages(conn *net.TCPConn, listenAttempt int, requestMs
 	maxAttempts, retryAttempts, delayDuration := 3, 0, time.Duration(30)
 	for {
 		if retryAttempts >= maxAttempts {
-			return errors.New("Timeout listening for message")
+			return 0, nil, errors.New("Timeout listening for message")
 		}
 		n, err := conn.Read(msgLength[:])
 		utils.CheckPrintln(err)
@@ -189,23 +205,12 @@ func (peer *Peer) HandleMessages(conn *net.TCPConn, listenAttempt int, requestMs
 	utils.CheckPrintln(err)
 	msgPayload = append(msgPayload, buf[:n]...)
 
-	log.Println("Got message from peer")
-
-	err = peer.parseMessage(int(msgID[0]), msgPayload, requestMsg)
-	if err != nil {
-		return err
-	}
-	// Return if peer unchokes
-	if !peer.Status.PeerChocking {
-		log.Println("Peer unchocked me!")
-		return nil
-	}
-	// continue listening for messages until unchokes
-	return peer.HandleMessages(conn, listenAttempt+1, requestMsg)
+	log.Println("Received message from peer")
+	return int(msgID[0]), msgPayload, nil
 }
 
-// parseMessage parses peer message, excluding empty keep-alive case
-func (peer *Peer) parseMessage(messageID int, payload []byte, requestMsg []byte) error {
+// HandleMessage handles initial peer message(s)
+func (peer *Peer) HandleMessage(messageID int, payload []byte, requestMsg []byte) error {
 	log.Println("messageID = ", messageID)
 	switch messageID {
 	case 0: // choke
@@ -227,32 +232,35 @@ func (peer *Peer) parseMessage(messageID int, payload []byte, requestMsg []byte)
 		}
 		peer.HavePieces = payload
 	case 6: // request
-		// TODO - implement me
-		return errors.New("Peer bitfield message length mismatch")
+		return errors.New("Received unexpected REQUEST message from peer, skipping")
 	case 7: // piece
 		// Should not receive a piece message here in first message
-		if requestMsg == nil {
-			return errors.New("Received PIECE message without requesting for it")
-		}
-		requestPieceBody := requestMsg[5:]
-		if !bytes.Equal(payload, requestPieceBody) {
-			return errors.New("ERROR: Peer sent piece doesn't match requested piece")
-		}
-		pieceIndex := payload[:4]
-		pieceBegin := payload[4:8]
-		pieceBlock := payload[8:]
-		// TODO - Save block to Piece struct
-
-		
+		return errors.New("Received unexpected PIECE message from peer, skipping")
 	case 8: // cancel
 		// TODO - implement me
-		return errors.New("Received CANCEL message from peer, skipping")
+		return errors.New("Received unexpected CANCEL message from peer, skipping")
 	case 9: // port
 		// TODO - implement me
-		return errors.New("Received PORT message from peer, skipping")
+		return errors.New("Received unexpected PORT message from peer, skipping")
 	default:
 		return errors.New("Invalid message ID, skipping")
 	}
+	return nil
+}
+
+// HandlePieceMessage updates client piece
+func (peer *Peer) HandlePieceMessage(payload []byte, requestMsg []byte, piece *piece.Piece) error {
+	requestPieceBody := requestMsg[5:]
+	pieceIndex := payload[:4]
+	pieceBegin := payload[4:8]
+	pieceBlock := payload[8:]
+	// Check if piece index and begin match requested
+	if !bytes.Equal(payload[:8], requestPieceBody[:8]) ||
+		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[13:17])) {
+		return errors.New("ERROR: Peer sent piece doesn't match requested piece")
+	}
+	// Save block to Piece struct
+	piece.Blocks = append(piece.Blocks, pieceBlock...)
 	return nil
 }
 
