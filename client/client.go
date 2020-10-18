@@ -11,21 +11,24 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+	"torrent-go/peer"
+	"torrent-go/piece"
+	"torrent-go/torrent"
+	"torrent-go/utils"
 
-	"github.com/dave2000sang/torrent-go/peer"
-	"github.com/dave2000sang/torrent-go/torrent"
 	"github.com/jackpal/bencode-go"
 	// "fmt"
 )
 
-// Client represents running BitTorrent client instance
+// Client represents BitTorrent client instance
 type Client struct {
 	TorrentFile torrent.Torrent
 	ID          [20]byte
 	PeerList    []*peer.Peer
+	Pieces      []*piece.Piece
 }
 
-type bencodeResponse struct {
+type bencodeTrackerResponse struct {
 	FailureReason string `bencode:"failure reason"`
 	Interval      int    `bencode:"warning message"`
 	TrackerID     string `bencode:"interval"`
@@ -35,9 +38,17 @@ type bencodeResponse struct {
 }
 
 // NewClient creates a new Client object
-func NewClient() *Client {
+func NewClient(curTorrent torrent.Torrent) *Client {
 	uniqueHash := time.Now().String() + strconv.Itoa(rand.Int())
-	c := Client{ID: sha1.Sum([]byte(uniqueHash))}
+	piecesList := []*piece.Piece{}
+	for i := 0; i < curTorrent.NumPieces; i++ {
+		piecesList = append(piecesList, piece.NewPiece(i))
+	}
+	c := Client{
+		TorrentFile: curTorrent,
+		ID:          sha1.Sum([]byte(uniqueHash)),
+		Pieces:      piecesList,
+	}
 	return &c
 }
 
@@ -66,7 +77,7 @@ func (client *Client) ConnectTracker() {
 	defer response.Body.Close()
 
 	// Handle tracker response
-	benRes := bencodeResponse{}
+	benRes := bencodeTrackerResponse{}
 	err = bencode.Unmarshal(response.Body, &benRes)
 	if err != nil {
 		log.Fatal(err)
@@ -80,15 +91,86 @@ func (client *Client) ConnectTracker() {
 		ip := net.IP([]byte(peers[i : i+4]))
 		port := binary.BigEndian.Uint16([]byte(peers[i+4 : i+6]))
 		newPeer, _ := peer.NewPeer(ip, port)
+		// Initialize peer.HavePieces to size <num pieces>/8
+		newPeer.HavePieces = make([]byte, utils.DivisionCeil(client.TorrentFile.NumPieces, 8))
 		client.PeerList = append(client.PeerList, newPeer)
 	}
 }
 
-// ConnectPeers connects to each peer
+// ConnectPeers connects to each peer, initiates handshake
 // TODO - connect to each peer concurrently
 func (client *Client) ConnectPeers() {
 	for _, peer := range client.PeerList {
-		peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+		err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
 		log.Println("--------------------------")
 	}
+}
+
+// DownloadPieces downloads pieces from peers
+func (client *Client) DownloadPieces() {
+	for _, peer := range client.Peerlist {
+		if !peer.Status.PeerChocking && peer.Status.AmInterested {
+			// peer is ready to receive requests for pieces
+			finished, err := client.startDownload(peer, conn)
+			if err != nil {
+				log.Println(err)
+				conn.Close()
+				continue
+			}
+			if (finished) {
+				// Finished downloading all pieces
+				conn.Close()
+				break
+			}
+		}
+		// conn exists (not nil)
+		// defer conn.Close()
+		conn.Close()
+
+	}
+}
+
+
+// startDownload begins downloading pieces from peer
+func (client *Client) startDownload(peer *peer.Peer) (bool, error) {
+	// First, form tcp connection with peer
+	conn, err := peer.TCPConnect()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	blockSize := 16384 			// Block size = 16KB
+	requestMsg := make([]byte, 17)
+	binary.BigEndian.PutUint32(requestMsg[:4], 19)
+	pieceIndex, blockOffset := client.getNextPieceIndex()
+	if pieceIndex == -1 {
+		return true, nil
+	}
+	copy(requestMsg[4:5], []byte{byte(1)})
+	binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
+	binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
+	binary.BigEndian.PutUint32(requestMsg[13:17], uint32(blockSize))
+	
+	// Send peer a REQUEST message	
+	_, err := conn.Write(requestMsg)
+	if err != nil {
+		return false, err
+	}
+	peer.HandleMessages(conn, 1, requestMsg)
+	return false, nil
+}
+
+// getNextPieceIndex finds the next incomplete piece to download
+func (client *Client) getNextPieceIndex() (int, int) {
+	for _, piece := range client.Pieces {
+		if !piece.IsComplete {
+			return piece.Index, len(piece.Blocks)
+		}
+	}
+	return -1, 0
 }

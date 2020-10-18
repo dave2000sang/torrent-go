@@ -1,2 +1,6 @@
+github.com/dave2000sang/torrent-go v0.0.0-20201016230237-90c0d7d6a158 h1:riJPnLggzZkpjBo0v65MVlnMMwKWHQck5OCMYfTtJMU=
+github.com/dave2000sang/torrent-go v0.0.0-20201016230237-90c0d7d6a158/go.mod h1:FD5PbPbCXsFqw9IZMlhLf6MgWx0guI185X294FXbbYg=
 github.com/jackpal/bencode-go v0.0.0-20180813173944-227668e840fa h1:ym9I4Q1lJG8nu+j5R2H6mHOfVjYbSiwUOzh/AFs3Xfs=
 github.com/jackpal/bencode-go v0.0.0-20180813173944-227668e840fa/go.mod h1:5FSBQ74yhCl5oQ+QxRPYzWMONFnxbL68/23eezsBI5c=
+github.com/jackpal/bencode-go v1.0.0 h1:lzbSPPqqSfWQnqVNe/BBY1NXdDpncArxShL10+fmFus=
+github.com/jackpal/bencode-go v1.0.0/go.mod h1:5FSBQ74yhCl5oQ+QxRPYzWMONFnxbL68/23eezsBI5c=

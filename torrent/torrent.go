@@ -6,7 +6,8 @@ import (
 	"errors"
 	"log"
 	"os"
-	"math"
+	"torrent-go/utils"
+
 	"github.com/jackpal/bencode-go"
 )
 
@@ -17,7 +18,7 @@ type Torrent struct {
 	FileName   string
 	FileLength int
 	NumPieces  int
-	PieceList  [][]byte		// PieceList[i] is the 20 length SHA1 hash of the ith piece
+	PieceList  [][]byte // PieceList[i] is the 20 length SHA1 hash of the ith piece
 }
 
 // bencodeInfo for bencode-go package
@@ -34,7 +35,6 @@ type bencodeOutput struct {
 	Announce string      `bencode:"announce"`
 	Info     bencodeInfo `bencode:"info"`
 }
-
 
 // ReadTorrentFile reads a torrent file path
 func ReadTorrentFile(filePath string) (Torrent, error) {
@@ -60,8 +60,8 @@ func createTorrent(output bencodeOutput) (Torrent, error) {
 		return Torrent{}, errors.New("torrent format error: info hash must be a multiple of 20 bytes")
 	}
 	var pieces [][]byte
-	for i:=0; i <= len(infoHashes)-20; i+=20 {
-		curPiece := []byte(infoHashes[i:i+20])
+	for i := 0; i <= len(infoHashes)-20; i += 20 {
+		curPiece := []byte(infoHashes[i : i+20])
 		pieces = append(pieces, curPiece)
 	}
 	// generate 20 byte SHA1 hash, to be sent to tracker server
@@ -73,7 +73,7 @@ func createTorrent(output bencodeOutput) (Torrent, error) {
 		Announce:   output.Announce,
 		FileName:   output.Info.Name,
 		FileLength: output.Info.Length,
-		NumPieces:  int(math.Ceil(float64(output.Info.Length) / float64(output.Info.PieceLength))),
+		NumPieces:  utils.DivisionCeil(output.Info.Length, output.Info.PieceLength),
 		PieceList:  pieces,
 	}
 	return newTorrent, nil
