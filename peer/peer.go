@@ -248,25 +248,17 @@ func (peer *Peer) HandleMessage(messageID int, payload []byte, requestMsg []byte
 	return nil
 }
 
-// HandlePieceMessage updates client piece
-func (peer *Peer) HandlePieceMessage(payload []byte, requestMsg []byte, piece *piece.Piece) error {
-	requestPieceBody := requestMsg[5:]
-	pieceIndex := payload[:4]
-	pieceBegin := payload[4:8]
-	pieceBlock := payload[8:]
-	// Check if piece index and begin match requested
-	if !bytes.Equal(payload[:8], requestPieceBody[:8]) ||
-		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[13:17])) {
-		return errors.New("ERROR: Peer sent piece doesn't match requested piece")
-	}
-	// Save block to Piece struct
-	piece.Blocks = append(piece.Blocks, pieceBlock...)
-	return nil
-}
 
 // updateBitfield returns updated bitfield value with index bit set to 1
 func updateBitfield(index int, oldBitfield byte) byte {
 	// get corresponding index in byte
 	bitIndex := index % 8
 	return oldBitfield | (1 << bitIndex)
+}
+
+// HasPiece returns true if peer has this piece (using bitfield)
+func (peer Peer) HasPiece(pieceIndex int) bool {
+	byteIndex := pieceIndex / 8
+	byteOffset := pieceIndex % 8
+	return peer.HavePieces[byteIndex] & (1 << byteOffset) != 0
 }

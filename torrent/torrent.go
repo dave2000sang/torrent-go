@@ -13,12 +13,13 @@ import (
 
 // Torrent is a .torrent file
 type Torrent struct {
-	Announce   string
-	InfoHash   [20]byte
-	FileName   string
-	FileLength int
-	NumPieces  int
-	PieceList  [][]byte // PieceList[i] is the 20 length SHA1 hash of the ith piece
+	Announce      string
+	InfoHash      [20]byte
+	FileName      string
+	FileLength    int
+	NumPieces     int
+	PieceLength   int
+	PieceHashList [][]byte // PieceHashList[i] is the 20 length SHA1 hash of the ith piece
 }
 
 // bencodeInfo for bencode-go package
@@ -69,12 +70,13 @@ func createTorrent(output bencodeOutput) (Torrent, error) {
 	bencode.Marshal(&buf, output.Info)
 	// log.Printf("%x\n", sha1.Sum([]byte(buf.String())))
 	newTorrent := Torrent{
-		InfoHash:   sha1.Sum([]byte(buf.String())),
-		Announce:   output.Announce,
-		FileName:   output.Info.Name,
-		FileLength: output.Info.Length,
-		NumPieces:  utils.DivisionCeil(output.Info.Length, output.Info.PieceLength),
-		PieceList:  pieces,
+		InfoHash:      sha1.Sum([]byte(buf.String())),
+		Announce:      output.Announce,
+		FileName:      output.Info.Name,
+		FileLength:    output.Info.Length,
+		NumPieces:     utils.DivisionCeil(output.Info.Length, output.Info.PieceLength),
+		PieceHashList: pieces,
+		PieceLength:   output.Info.PieceLength,
 	}
 	return newTorrent, nil
 }

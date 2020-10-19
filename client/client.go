@@ -39,6 +39,9 @@ type bencodeTrackerResponse struct {
 	PeerList      string `bencode:"peers"`
 }
 
+// Blocksize for downloading pieces
+const Blocksize = 16384 // Block size = 16KB
+
 // NewClient creates a new Client object
 func NewClient(curTorrent torrent.Torrent) *Client {
 	uniqueHash := time.Now().String() + strconv.Itoa(rand.Int())
@@ -130,54 +133,77 @@ func (client *Client) DownloadPieces() {
 
 // startDownload begins downloading pieces from peer
 func (client *Client) startDownload(peer *peer.Peer) error {
-	// First, form tcp connection with peer
+	// Form TCP connection with peer
 	conn, err := peer.TCPConnect()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	blockSize := 16384 // Block size = 16KB
-	requestMsg := make([]byte, 17)
-	binary.BigEndian.PutUint32(requestMsg[:4], 19)
-	pieceIndex, blockOffset, piece := client.getNextPieceIndex()
-	if pieceIndex == -1 {
-		// Either all pieces finished, or this peer does not have any pieces we need
-		return nil
+	// Keep requesting blocks until piece is complete
+	totalPieceSize = client.TorrentFile.PieceLength
+	pieceIndex, blockOffset, curPiece := client.getNextPiece()
+	curBlockSize = BlockSize
+	for blockOffset < totalPieceSize {
+		requestMsg := make([]byte, 17)
+		binary.BigEndian.PutUint32(requestMsg[:4], 19)
+		if pieceIndex == -1 {
+			// Either all pieces finished, or this peer does not have any pieces we need
+			return nil
+		}
+		copy(requestMsg[4:5], []byte{byte(1)})
+		binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
+		binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
+		binary.BigEndian.PutUint32(requestMsg[13:17], uint32(curBlockSize))
+		// Send peer a REQUEST piece message
+		_, err = conn.Write(requestMsg)
+		if err != nil {
+			return err
+		}
+		// Parse peer response
+		msgID, msgPayload, err := peer.ReadMessage(conn)
+		if err != nil {
+			return err
+		}
+		if msgID != 9 {
+			return errors.New("Peer did not respond with piece message")
+		}
+		updatePieceWithBlock(msgPayload, requestMsg[5:], curPiece)
+		// keep looping until piece is completely downloaded
+		blockOffset += curBlockSize
 	}
-	copy(requestMsg[4:5], []byte{byte(1)})
-	binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
-	binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
-	binary.BigEndian.PutUint32(requestMsg[13:17], uint32(blockSize))
-	// Send peer a REQUEST message
-	_, err = conn.Write(requestMsg)
-	if err != nil {
-		return err
-	}
-	// Parse peer response
-	msgID, msgPayload, err := peer.ReadMessage(conn)
-	if err != nil {
-		return err
-	}
-	if msgID != 9 {
-		return errors.New("Peer did not respond with piece message")
-	}
-	peer.HandlePieceMessage(msgPayload, requestMsg[5:], piece)
 	return nil
 }
 
-// getNextPieceIndex finds the next incomplete piece that peer doesn't have to download
-func (client *Client) getNextPieceIndex(peer *peer.Peer) (int, int, *piece.Piece) {
+// getNextPiece finds the next incomplete piece that peer owns
+func (client *Client) getNextPiece(peer *peer.Peer) (int, int, *piece.Piece) {
 	for _, piece := range client.Pieces {
 		if !piece.IsComplete {
-			pieceIndex = piece.Index
-			byteIndex := pieceIndex / 8
-			byteOffset = pieceIndex % 8
 			// Check that peer has the piece
-			if peer.HavePieces[byteIndex] & (1 << byteOffset) {
-				return pieceIndex, len(piece.Blocks), piece
+			pieceIndex := piece.Index
+			if peer.HasPiece(pieceIndex) {
+				return pieceIndex, piece.BlockIndex, piece
 			}
 		}
-		return -1, 0, nil
 	}
+	return -1, 0, nil
+}
+
+
+// updatePieceWithBlock updates client piece
+func updatePieceWithBlock(payload []byte, requestMsg []byte, piece *piece.Piece) error {
+	requestPieceBody := requestMsg[5:]
+	// pieceIndex := payload[:4]
+	// pieceBegin := payload[4:8]
+	pieceBlock := payload[8:]
+	// Check if piece index and begin match requested
+	if !bytes.Equal(payload[:8], requestPieceBody[:8]) ||
+		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[13:17])) {
+		return errors.New("ERROR: Peer sent piece doesn't match requested piece")
+	}
+	// Save block to Piece struct
+	piece.Blocks = append(piece.Blocks, pieceBlock...)
+	piece.BlockIndex += len(pieceBlock)
+	piece.IsDownloading = true
+	return nil
 }
