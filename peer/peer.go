@@ -262,3 +262,17 @@ func (peer Peer) HasPiece(pieceIndex int) bool {
 	byteOffset := pieceIndex % 8
 	return peer.HavePieces[byteIndex] & (1 << byteOffset) != 0
 }
+
+// GetNextPiece finds the next incomplete piece that peer owns
+func (peer *Peer) GetNextPiece(pieceList []*piece.Piece) (int, int, *piece.Piece) {
+	for _, piece := range pieceList {
+		if !piece.IsComplete {
+			// Check that peer has the piece
+			pieceIndex := piece.Index
+			if peer.HasPiece(pieceIndex) {
+				return pieceIndex, piece.BlockIndex, piece
+			}
+		}
+	}
+	return -1, 0, nil
+}

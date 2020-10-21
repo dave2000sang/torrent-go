@@ -141,9 +141,9 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 	defer conn.Close()
 
 	// Keep requesting blocks until piece is complete
-	totalPieceSize = client.TorrentFile.PieceLength
-	pieceIndex, blockOffset, curPiece := client.getNextPiece()
-	curBlockSize = BlockSize
+	totalPieceSize := client.TorrentFile.PieceLength
+	pieceIndex, blockOffset, curPiece := peer.GetNextPiece(client.Pieces)
+	curBlockSize := Blocksize
 	for blockOffset < totalPieceSize {
 		requestMsg := make([]byte, 17)
 		binary.BigEndian.PutUint32(requestMsg[:4], 19)
@@ -168,42 +168,13 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 		if msgID != 9 {
 			return errors.New("Peer did not respond with piece message")
 		}
-		updatePieceWithBlock(msgPayload, requestMsg[5:], curPiece)
+		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])
 		// keep looping until piece is completely downloaded
 		blockOffset += curBlockSize
 	}
+	curPiece.IsComplete = true
+	curPiece.IsDownloading = false
 	return nil
 }
 
-// getNextPiece finds the next incomplete piece that peer owns
-func (client *Client) getNextPiece(peer *peer.Peer) (int, int, *piece.Piece) {
-	for _, piece := range client.Pieces {
-		if !piece.IsComplete {
-			// Check that peer has the piece
-			pieceIndex := piece.Index
-			if peer.HasPiece(pieceIndex) {
-				return pieceIndex, piece.BlockIndex, piece
-			}
-		}
-	}
-	return -1, 0, nil
-}
 
-
-// updatePieceWithBlock updates client piece
-func updatePieceWithBlock(payload []byte, requestMsg []byte, piece *piece.Piece) error {
-	requestPieceBody := requestMsg[5:]
-	// pieceIndex := payload[:4]
-	// pieceBegin := payload[4:8]
-	pieceBlock := payload[8:]
-	// Check if piece index and begin match requested
-	if !bytes.Equal(payload[:8], requestPieceBody[:8]) ||
-		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[13:17])) {
-		return errors.New("ERROR: Peer sent piece doesn't match requested piece")
-	}
-	// Save block to Piece struct
-	piece.Blocks = append(piece.Blocks, pieceBlock...)
-	piece.BlockIndex += len(pieceBlock)
-	piece.IsDownloading = true
-	return nil
-}
