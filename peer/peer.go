@@ -37,7 +37,7 @@ type Status struct {
 // NewPeer creates a new Peer instance
 func NewPeer(ip net.IP, port uint16) (*Peer, error) {
 	// Set initial status with AmInterested true
-	peer := Peer{ip, port, Status{true, true, true, false}, []byte{}}
+	peer := Peer{ip, port, Status{true, false, true, false}, []byte{}}
 	return &peer, nil
 }
 
@@ -100,7 +100,6 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 		}
 		n, err := conn.Read(buf[:])
 		utils.CheckPrintln(err)
-		log.Println("n = ", n, ", buf = ", buf[:])
 		if n == 0 {
 			log.Println("Retry attempt: ", retryAttempts)
 			time.Sleep(60 * time.Second)
@@ -146,6 +145,20 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 	}
 	log.Println("Received handshake from peer")
 
+	// Send "interested" message
+	interested := make([]byte, 5)
+	binary.BigEndian.PutUint32(interested[:4], 1)
+	copy(interested[4:5], []byte{2})
+
+	_, err = conn.Write(interested)
+	if err != nil {
+		conn.Close()
+		return err
+	}
+	peer.Status.AmInterested = true
+	log.Println("Sent interested msg")
+
+	// Listen for messages until peer unchokes
 	listenAttempt := 0
 	for {
 		if listenAttempt >= MaxListenAttempts {
@@ -165,7 +178,6 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 			log.Println("Peer unchocked me!")
 			break
 		}
-		// continue listening for messages until unchokes
 		listenAttempt++
 	}
 	return nil
@@ -180,7 +192,7 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 		msgPayload    []byte
 	)
 	// Listen for messages until time out
-	maxAttempts, retryAttempts, delayDuration := 3, 0, time.Duration(30)
+	maxAttempts, retryAttempts, delayDuration := 3, 0, time.Duration(15)
 	for {
 		if retryAttempts >= maxAttempts {
 			return 0, nil, errors.New("Timeout listening for message")

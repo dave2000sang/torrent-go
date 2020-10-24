@@ -109,7 +109,6 @@ func (client *Client) ConnectPeers() {
 		err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
 		if err != nil {
 			log.Println(err)
-			continue
 		}
 		log.Println("--------------------------")
 	}
@@ -118,8 +117,8 @@ func (client *Client) ConnectPeers() {
 // DownloadPieces downloads pieces from peers
 func (client *Client) DownloadPieces() {
 	for _, peer := range client.PeerList {
-		if !peer.Status.PeerChocking && peer.Status.AmInterested {
-			// peer is ready to receive requests for pieces
+		if !peer.Status.PeerChocking && peer.Status.AmInterested { // ready to receive requests for pieces
+			log.Println("Begin downloading from peer ", peer.IP.String())
 			err := client.startDownload(peer)
 			if err != nil {
 				log.Println(err)
@@ -127,6 +126,7 @@ func (client *Client) DownloadPieces() {
 			}
 
 			// TODO - check if all pieces finished downloading
+			log.Println("==========================")			
 		}
 	}
 }
@@ -143,23 +143,27 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 	// Keep requesting blocks until piece is complete
 	totalPieceSize := client.TorrentFile.PieceLength
 	pieceIndex, blockOffset, curPiece := peer.GetNextPiece(client.Pieces)
+	if pieceIndex == -1 {
+		// Either all pieces finished, or this peer does not have any pieces we need
+		return nil
+	}
+	log.Println("Next piece index: ", pieceIndex)
 	curBlockSize := Blocksize
 	for blockOffset < totalPieceSize {
+		log.Println("blockOffset: ", blockOffset)
 		requestMsg := make([]byte, 17)
 		binary.BigEndian.PutUint32(requestMsg[:4], 19)
-		if pieceIndex == -1 {
-			// Either all pieces finished, or this peer does not have any pieces we need
-			return nil
-		}
+
 		copy(requestMsg[4:5], []byte{byte(1)})
 		binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
 		binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
 		binary.BigEndian.PutUint32(requestMsg[13:17], uint32(curBlockSize))
-		// Send peer a REQUEST piece message
+		// Send REQUEST piece message
 		_, err = conn.Write(requestMsg)
 		if err != nil {
 			return err
 		}
+		log.Println("Sent request for block")
 		// Parse peer response
 		msgID, msgPayload, err := peer.ReadMessage(conn)
 		if err != nil {
@@ -168,9 +172,11 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 		if msgID != 9 {
 			return errors.New("Peer did not respond with piece message")
 		}
+		log.Println("Updating piece with block")
 		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])
 		// keep looping until piece is completely downloaded
 		blockOffset += curBlockSize
+		log.Println("~~~~~~~~~~~~~~~~~~~~~~~")
 	}
 	curPiece.IsComplete = true
 	curPiece.IsDownloading = false
