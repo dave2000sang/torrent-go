@@ -23,7 +23,8 @@ type Peer struct {
 	IP         net.IP // 4 bytes IPv4
 	Port       uint16 // 2 bytes Port
 	Status     Status
-	HavePieces []byte // bitfield of pieces this peer has
+	HavePieces []byte       // bitfield of pieces this peer has
+	Connection *net.TCPConn // TCP connection instance
 }
 
 // Status is peer status
@@ -37,7 +38,7 @@ type Status struct {
 // NewPeer creates a new Peer instance
 func NewPeer(ip net.IP, port uint16) (*Peer, error) {
 	// Set initial status with AmInterested true
-	peer := Peer{ip, port, Status{true, false, true, false}, []byte{}}
+	peer := Peer{ip, port, Status{true, false, true, false}, []byte{}, nil}
 	return &peer, nil
 }
 
@@ -58,7 +59,7 @@ func (peer *Peer) TCPConnect() (*net.TCPConn, error) {
 }
 
 // DoHandshake sends initial handshake with peer
-func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
+func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) (*net.TCPConn, error) {
 	handshake := []byte{}
 	handshake = append(handshake, []byte{byte(19)}...)
 	handshake = append(handshake, []byte("BitTorrent protocol")...)
@@ -70,15 +71,14 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 	log.Println("Performing handshake with peer: ", peer.IP.String())
 	conn, err := peer.TCPConnect()
 	if err != nil {
-		return err
+		return conn, err
 	}
-	defer conn.Close()
+	// defer conn.Close()
 
 	_, err = conn.Write(handshake)
 	if err != nil {
 		log.Println("Error sending handshake")
-		conn.Close()
-		return err
+		return conn, err
 	}
 
 	// read peer response handshake
@@ -95,11 +95,10 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 	maxAttempts, retryAttempts := 3, 0
 	for {
 		if retryAttempts >= maxAttempts {
-			conn.Close()
-			return errors.New("Timeout, skipping")
+			return conn, errors.New("Timeout, skipping")
 		}
 		n, err := conn.Read(buf[:])
-		utils.CheckPrintln(err)
+		utils.CheckPrintln(err, n, len(buf))
 		if n == 0 {
 			log.Println("Retry attempt: ", retryAttempts)
 			time.Sleep(60 * time.Second)
@@ -112,8 +111,8 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 
 	// pstr
 	buf = make([]byte, pstrlen)
-	_, err = conn.Read(buf)
-	utils.CheckPrintln(err)
+	n, err := conn.Read(buf)
+	utils.CheckPrintln(err, n, len(buf))
 	pstr = string(buf[:])
 	if pstr != "BitTorrent protocol" {
 		log.Println("Hmm, this peer is using protocol: ", pstr)
@@ -121,27 +120,26 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 
 	// reserved
 	buf = make([]byte, 8)
-	_, err = conn.Read(buf)
-	utils.CheckPrintln(err)
+	n, err = conn.Read(buf)
+	utils.CheckPrintln(err, n, len(buf))
 	copy(reserved[:], buf)
 
 	// info hash
 	buf = make([]byte, 20)
-	_, err = conn.Read(buf)
-	utils.CheckPrintln(err)
+	n, err = conn.Read(buf)
+	utils.CheckPrintln(err, n, len(buf))
 	copy(peerInfoHash[:], buf)
 
 	// peer ID
 	buf = make([]byte, 20)
-	_, err = conn.Read(buf)
-	utils.CheckPrintln(err)
+	n, err = conn.Read(buf)
+	utils.CheckPrintln(err, n, len(buf))
 	copy(peerID[:], buf)
 
 	// Verify info hashes match (and peer id if you have it)
 	// close TCP connection if they don't
 	if !bytes.Equal(infoHash[:], peerInfoHash[:]) {
-		conn.Close()
-		return errors.New("ERROR: response info hash does not match")
+		return conn, errors.New("ERROR: response info hash does not match")
 	}
 	log.Println("Received handshake from peer")
 
@@ -152,8 +150,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 
 	_, err = conn.Write(interested)
 	if err != nil {
-		conn.Close()
-		return err
+		return conn, err
 	}
 	peer.Status.AmInterested = true
 	log.Println("Sent interested msg")
@@ -161,17 +158,17 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 	// Listen for messages until peer unchokes
 	listenAttempt := 0
 	for {
+		log.Println("listen unchoke attempt: ", listenAttempt)
 		if listenAttempt >= MaxListenAttempts {
-			return errors.New("Max attempts exceeded reading messages skipping")
+			return conn, errors.New("Max attempts exceeded while reading messages, skipping")
 		}
 		msgID, msgPayload, err := peer.ReadMessage(conn)
 		if err != nil {
-			conn.Close()
-			return err
+			return conn, err
 		}
 		err = peer.HandleMessage(msgID, msgPayload, nil)
 		if err != nil {
-			return err
+			return conn, err
 		}
 		// Break if peer unchokes
 		if !peer.Status.PeerChocking {
@@ -180,7 +177,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 		}
 		listenAttempt++
 	}
-	return nil
+	return conn, nil
 }
 
 // ReadMessage reads messages from peer and returns message ID and payload
@@ -198,7 +195,9 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 			return 0, nil, errors.New("Timeout listening for message")
 		}
 		n, err := conn.Read(msgLength[:])
-		utils.CheckPrintln(err)
+		if err != nil {
+			return 0, nil, err
+		}
 		if n == 0 {
 			log.Println("Keep alive for peer message attempt: ", retryAttempts)
 			time.Sleep(delayDuration * time.Second)
@@ -209,12 +208,13 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 		}
 	}
 	n, err := conn.Read(msgID[:])
-	utils.CheckPrintln(err)
+	utils.CheckPrintln(err, n, len(msgID))
+	log.Println("msgID: ", int(msgID[0]))
 
 	// Read the next payloadLength bytes as msgPayload
 	buf := make([]byte, payloadLength)
 	n, err = conn.Read(buf)
-	utils.CheckPrintln(err)
+	utils.CheckPrintln(err, n, len(buf))
 	msgPayload = append(msgPayload, buf[:n]...)
 
 	log.Println("Received message from peer")
@@ -260,7 +260,6 @@ func (peer *Peer) HandleMessage(messageID int, payload []byte, requestMsg []byte
 	return nil
 }
 
-
 // updateBitfield returns updated bitfield value with index bit set to 1
 func updateBitfield(index int, oldBitfield byte) byte {
 	// get corresponding index in byte
@@ -272,7 +271,7 @@ func updateBitfield(index int, oldBitfield byte) byte {
 func (peer Peer) HasPiece(pieceIndex int) bool {
 	byteIndex := pieceIndex / 8
 	byteOffset := pieceIndex % 8
-	return peer.HavePieces[byteIndex] & (1 << byteOffset) != 0
+	return peer.HavePieces[byteIndex]&(1<<byteOffset) != 0
 }
 
 // GetNextPiece finds the next incomplete piece that peer owns

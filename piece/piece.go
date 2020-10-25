@@ -15,6 +15,9 @@ type Piece struct {
 	IsDownloading bool // if started downloading piece
 }
 
+// Blocksize for downloading pieces
+const Blocksize = 16384 // Block size = 16KB
+
 // NewPiece constructor
 func NewPiece(index int) *Piece {
 	return &Piece{Index: index, BlockIndex: 0, IsComplete: false, IsDownloading: false}

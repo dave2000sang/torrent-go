@@ -39,8 +39,7 @@ type bencodeTrackerResponse struct {
 	PeerList      string `bencode:"peers"`
 }
 
-// Blocksize for downloading pieces
-const Blocksize = 16384 // Block size = 16KB
+
 
 // NewClient creates a new Client object
 func NewClient(curTorrent torrent.Torrent) *Client {
@@ -105,9 +104,13 @@ func (client *Client) ConnectTracker() {
 // ConnectPeers connects to each peer, initiates handshake
 // TODO - connect to each peer concurrently
 func (client *Client) ConnectPeers() {
-	for _, peer := range client.PeerList {
-		err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+	// For now, only connect to first 3 peers for testing
+	for _, peer := range client.PeerList[:1] {
+		conn, err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+		// Persist tcp connection
+		peer.Connection = conn
 		if err != nil {
+			conn.Close()
 			log.Println(err)
 		}
 		log.Println("--------------------------")
@@ -122,23 +125,25 @@ func (client *Client) DownloadPieces() {
 			err := client.startDownload(peer)
 			if err != nil {
 				log.Println(err)
-				continue
 			}
-
 			// TODO - check if all pieces finished downloading
-			log.Println("==========================")			
+			log.Println("==========================")
 		}
 	}
 }
 
 // startDownload begins downloading pieces from peer
 func (client *Client) startDownload(peer *peer.Peer) error {
-	// Form TCP connection with peer
-	conn, err := peer.TCPConnect()
-	if err != nil {
-		return err
+	conn := peer.Connection
+	if conn == nil {
+		return errors.New("TCP Connection is nil")
 	}
 	defer conn.Close()
+	// // Form TCP connection with peer
+	// conn, err := peer.TCPConnect()
+	// if err != nil {
+	// 	return err
+	// }
 
 	// Keep requesting blocks until piece is complete
 	totalPieceSize := client.TorrentFile.PieceLength
@@ -148,18 +153,19 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 		return nil
 	}
 	log.Println("Next piece index: ", pieceIndex)
-	curBlockSize := Blocksize
+	curBlockSize := piece.Blocksize
 	for blockOffset < totalPieceSize {
 		log.Println("blockOffset: ", blockOffset)
 		requestMsg := make([]byte, 17)
-		binary.BigEndian.PutUint32(requestMsg[:4], 19)
+		binary.BigEndian.PutUint32(requestMsg[:4], 13)
 
-		copy(requestMsg[4:5], []byte{byte(1)})
+		// Create request message (id: 6)
+		copy(requestMsg[4:5], []byte{byte(6)})
 		binary.BigEndian.PutUint32(requestMsg[5:9], uint32(pieceIndex))
 		binary.BigEndian.PutUint32(requestMsg[9:13], uint32(blockOffset))
 		binary.BigEndian.PutUint32(requestMsg[13:17], uint32(curBlockSize))
 		// Send REQUEST piece message
-		_, err = conn.Write(requestMsg)
+		_, err := conn.Write(requestMsg)
 		if err != nil {
 			return err
 		}
