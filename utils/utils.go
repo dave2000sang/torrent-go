@@ -3,6 +3,7 @@ package utils
 import (
 	"log"
 	"math"
+	"os"
 	// "net"
 )
 
@@ -13,12 +14,6 @@ func CheckFatal(err error) {
 	}
 }
 
-// // ReadBuffer wraps net.Read(), reads message equal to buffer length
-// func ReadBuffer(buffer []byte, conn *net.TCPConn) (int, error) {
-// 	n, err := conn.Read(buffer[:])
-// 	CheckPrintln(err, n, len(buffer))
-// 	return n, err
-// }
 
 // CheckPrintln prints error to log stdout
 func CheckPrintln(err error, n, size int) {
@@ -33,4 +28,15 @@ func CheckPrintln(err error, n, size int) {
 // DivisionCeil returns Ceil(a/b)
 func DivisionCeil(a, b int) int {
 	return int(math.Ceil(float64(a) / float64(b)))
+}
+
+// WriteFile writes data to file
+func WriteFile(file string, data []byte) {
+	log.Println("writing data to ", file)
+	f, err := os.Create(file)
+	if err != nil {
+		log.Fatal(err)
+	}
+	f.Write(data)
+	f.Close()
 }

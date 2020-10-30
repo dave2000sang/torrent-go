@@ -172,20 +172,27 @@ func (client *Client) startDownload(peer *peer.Peer) error {
 		log.Println("Sent request for block")
 		// Parse peer response
 		msgID, msgPayload, err := peer.ReadMessage(conn)
+		// write payload for debugging
+		utils.WriteFile("payloadDump", msgPayload)
+
 		if err != nil {
 			return err
 		}
-		if msgID != 9 {
+		if msgID != 7 {
 			return errors.New("Peer did not respond with piece message")
 		}
-		log.Println("Updating piece with block")
+
+
 		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])
+		log.Println("Updated piece with block")
 		// keep looping until piece is completely downloaded
 		blockOffset += curBlockSize
 		log.Println("~~~~~~~~~~~~~~~~~~~~~~~")
 	}
 	curPiece.IsComplete = true
 	curPiece.IsDownloading = false
+	// TODO - verify downloaded piece matches its SHA20 hash
+	log.Println("Finished downloading piece!", pieceIndex)
 	return nil
 }
 

@@ -30,13 +30,15 @@ func WriteToDisk(filepath string) {
 
 // UpdatePieceWithBlock updates piece.Blocks[] using response message payload
 func (piece *Piece) UpdatePieceWithBlock(payload []byte, requestMsg []byte) error {
-	requestPieceBody := requestMsg[5:]
+	if len(payload) != Blocksize + 8 {
+		return errors.New("Error: piece does not match requested block size")
+	}
 	// pieceIndex := payload[:4]
 	// pieceBegin := payload[4:8]
 	pieceBlock := payload[8:]
-	// Check if piece index and begin match requested
-	if !bytes.Equal(payload[:8], requestPieceBody[:8]) ||
-		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[13:17])) {
+	// Check if piece and begin block index match requested
+	if !bytes.Equal(payload[:8], requestMsg[:8]) ||
+		len(pieceBlock) != int(binary.BigEndian.Uint32(requestMsg[8:])) {
 		return errors.New("ERROR: Peer sent piece doesn't match requested piece")
 	}
 	// Save block to Piece struct

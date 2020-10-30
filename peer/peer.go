@@ -2,7 +2,7 @@ package peer
 
 import (
 	"bytes"
-	// "io"
+	"io"
 	// "io/ioutil"
 	"encoding/binary"
 	"errors"
@@ -97,7 +97,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) (*net.TCPConn, error)
 		if retryAttempts >= maxAttempts {
 			return conn, errors.New("Timeout, skipping")
 		}
-		n, err := conn.Read(buf[:])
+		n, err := io.ReadFull(conn, buf)
 		utils.CheckPrintln(err, n, len(buf))
 		if n == 0 {
 			log.Println("Retry attempt: ", retryAttempts)
@@ -111,7 +111,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) (*net.TCPConn, error)
 
 	// pstr
 	buf = make([]byte, pstrlen)
-	n, err := conn.Read(buf)
+	n, err := io.ReadFull(conn, buf)
 	utils.CheckPrintln(err, n, len(buf))
 	pstr = string(buf[:])
 	if pstr != "BitTorrent protocol" {
@@ -120,19 +120,19 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) (*net.TCPConn, error)
 
 	// reserved
 	buf = make([]byte, 8)
-	n, err = conn.Read(buf)
+	n, err = io.ReadFull(conn, buf)
 	utils.CheckPrintln(err, n, len(buf))
 	copy(reserved[:], buf)
 
 	// info hash
 	buf = make([]byte, 20)
-	n, err = conn.Read(buf)
+	n, err = io.ReadFull(conn, buf)
 	utils.CheckPrintln(err, n, len(buf))
 	copy(peerInfoHash[:], buf)
 
 	// peer ID
 	buf = make([]byte, 20)
-	n, err = conn.Read(buf)
+	n, err = io.ReadFull(conn, buf)
 	utils.CheckPrintln(err, n, len(buf))
 	copy(peerID[:], buf)
 
@@ -194,7 +194,7 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 		if retryAttempts >= maxAttempts {
 			return 0, nil, errors.New("Timeout listening for message")
 		}
-		n, err := conn.Read(msgLength[:])
+		n, err := io.ReadFull(conn, msgLength[:])
 		if err != nil {
 			return 0, nil, err
 		}
@@ -207,13 +207,17 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 			break
 		}
 	}
-	n, err := conn.Read(msgID[:])
+	n, err := io.ReadFull(conn, msgID[:])
 	utils.CheckPrintln(err, n, len(msgID))
 	log.Println("msgID: ", int(msgID[0]))
 
+	// Message without payload (e.g. choke, unchoke, interested)
+	if payloadLength == 0 {
+		return int(msgID[0]), msgPayload, nil 
+	}
 	// Read the next payloadLength bytes as msgPayload
 	buf := make([]byte, payloadLength)
-	n, err = conn.Read(buf)
+	n, err = io.ReadFull(conn, buf)
 	utils.CheckPrintln(err, n, len(buf))
 	msgPayload = append(msgPayload, buf[:n]...)
 
@@ -223,7 +227,6 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 
 // HandleMessage handles initial peer message(s)
 func (peer *Peer) HandleMessage(messageID int, payload []byte, requestMsg []byte) error {
-	log.Println("messageID = ", messageID)
 	switch messageID {
 	case 0: // choke
 		peer.Status.PeerChocking = true
