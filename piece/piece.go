@@ -46,8 +46,6 @@ func (piece *Piece) UpdatePieceWithBlock(payload []byte, requestMsg []byte) erro
 	if len(payload) != Blocksize+8 {
 		return errors.New("Error: piece does not match requested block size")
 	}
-	// pieceIndex := payload[:4]
-	// pieceBegin := payload[4:8]
 	pieceBlock := payload[8:]
 	// Check if piece and begin block index match requested
 	if !bytes.Equal(payload[:8], requestMsg[:8]) ||
