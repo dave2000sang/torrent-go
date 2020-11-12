@@ -165,35 +165,40 @@ func (client *Client) ConnectPeers() {
 		finishedPiece := <- results
 		client.verifyPieceAndWriteDisk(finishedPiece)	
 	}
+	// TODO - end game, finished downloading all pieces
 }
 
+// mainWorker is run concurrently with ConnectPeers()
 func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piece.Piece) {
 	log.Println("Running mainWorker on peer", peer.IP)
 	// handshake with peer
 	err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
 	if err != nil {
 		log.Println(err)
-		if peer.Connection != nil {
-			peer.Connection.Close()
-		}
 		return
 	}
-	if !peer.Status.PeerChocking && peer.Status.AmInterested {
-		log.Println("Begin downloading from peer ", peer.IP.String())
-		curPiece := <- pieceQueue
-		err = client.startDownload(peer, curPiece)
-		if err != nil {
-			pieceQueue <- curPiece
-			log.Println(err)
+	if peer.Connection != nil {
+		defer peer.Connection.Close()
+	}
+	// Keep requesting and downloading pieces from pieceQueue
+	for {
+		if !peer.Status.PeerChocking && peer.Status.AmInterested {
+			curPiece := <- pieceQueue
+			log.Printf("Begin downloading piece [%d] from peer %s \n", curPiece.Index, peer.IP.String())
+			err = client.startDownload(peer, curPiece)
+			if err != nil {
+				log.Println(err)
+				pieceQueue <- curPiece
+				return
+			}
+			// Write downloaded piece back
+			results <- curPiece
+			// TODO - check if all pieces finished downloading
+		} else {
 			return
 		}
-		// Write downloaded piece back
-		results <- curPiece
-		// TODO - check if all pieces finished downloading
-	} else {
-		return
+		log.Println("--------------------------")
 	}
-	log.Println("--------------------------")
 }
 
 func (client *Client) verifyPieceAndWriteDisk(piece *piece.Piece) {
@@ -215,7 +220,6 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 	if conn == nil {
 		return errors.New("TCP Connection is nil")
 	}
-	defer conn.Close()
 
 	// Either all pieces finished, or this peer does not have any pieces we need
 	if curPiece == nil {
