@@ -3,12 +3,14 @@ package main
 import (
 	"torrent-go/client"
 	"torrent-go/torrent"
-	// "log"
+	"log"
 )
 
-
+// TEST flag
+const TEST = true
 
 func main() {
+	log.Println("TEST = ", TEST)
 	file := "example_torrents/ubuntu-20.04.1-desktop-amd64.iso.torrent"
 	// Create a new Client
 	curTorrent, err := torrent.ReadTorrentFile(file)
@@ -24,9 +26,15 @@ func main() {
 	// Get peers list from tracker
 	client.ConnectTracker()
 
-	// Connect to Peers
-	client.ConnectPeers()
+	log.Println("NUM PIECES: ", client.TorrentFile.NumPieces) // ~10000 for ubuntu image
+	log.Println("NUM PEERS: ", len(client.PeerList))
+	PeerConcurrentLimit := 10
 	
-	// Begin downloading pieces
-	client.DownloadPieces()
+	if TEST {
+		if len(client.PeerList) > PeerConcurrentLimit {
+			client.PeerList = client.PeerList[:PeerConcurrentLimit]
+		}
+	}
+	// Connect to peers and download file
+	client.ConnectPeers()
 }
