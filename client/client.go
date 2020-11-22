@@ -30,6 +30,7 @@ type Client struct {
 	PeerList     []*peer.Peer
 	Pieces       []*piece.Piece
 	DownloadFile *os.File // opened file to write pieces to
+	DownloadPath string
 }
 
 type bencodeTrackerResponse struct {
@@ -65,6 +66,7 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 		// Update client pieces info with existing pieces
 		pieceLength := curTorrent.PieceLength
 		emptyPiece := make([]byte, pieceLength)
+		havePieces := []int{}
 		for i := 0; i < curTorrent.NumPieces-1; i++ {
 			var existingPiece []byte
 			if i == curTorrent.NumPieces-1 {
@@ -72,11 +74,13 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 			}
 			existingPiece = oldContent[i*pieceLength : i*pieceLength+pieceLength]
 			if !bytes.Equal(existingPiece, emptyPiece) {
-				log.Println("Using existing piece", i)
+				havePieces = append(havePieces, i)
 				piecesList[i].IsComplete = true
+			} else {
+				log.Println("Piece [", i, "] missing")
 			}
 		}
-
+		log.Println("Previously downloaded pieces: ", havePieces)
 	}
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -89,6 +93,7 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 		ID:           sha1.Sum([]byte(uniqueHash)),
 		Pieces:       piecesList,
 		DownloadFile: file,
+		DownloadPath: filePath,
 	}
 	return &c, nil
 }
@@ -140,7 +145,6 @@ func (client *Client) ConnectTracker() {
 
 // ConnectPeers connects to each peer, initiates handshake
 func (client *Client) ConnectPeers() {
-	log.Println("HERE 1")
 	pieceQueue := make(chan *piece.Piece)
 	results := make(chan *piece.Piece)
 
@@ -152,20 +156,26 @@ func (client *Client) ConnectPeers() {
 			}
 		}
 	}()
-	log.Println("HERE 2")
 
 	// Trigger main worker to handshake and download pieces concurrently
 	for _, peer := range client.PeerList {
 		go client.mainWorker(peer, pieceQueue, results)
 	}
-	log.Println("HERE 3")
 	
 	// listen for finished download pieces
 	for !finishedDownloading(client.Pieces) {
 		finishedPiece := <- results
-		client.verifyPieceAndWriteDisk(finishedPiece)	
+		err := client.verifyPieceAndWriteDisk(finishedPiece)
+		if err != nil {
+			log.Println(err)
+			log.Println("Failed to verify/write piece: ", finishedPiece.Index)
+			// Reset piece and add back to pieceQueue
+			finishedPiece.Reset()
+			pieceQueue <- finishedPiece
+		}
 	}
-	// TODO - end game, finished downloading all pieces
+	// finished downloading all pieces
+	log.Println("DOWNLOAD COMPLETE, file path: ", client.DownloadPath)
 }
 
 // mainWorker is run concurrently with ConnectPeers()
@@ -184,7 +194,7 @@ func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piec
 	for {
 		if !peer.Status.PeerChocking && peer.Status.AmInterested {
 			curPiece := <- pieceQueue
-			log.Printf("Begin downloading piece [%d] from peer %s \n", curPiece.Index, peer.IP.String())
+			// log.Printf("Begin downloading piece [%d] from peer %s \n", curPiece.Index, peer.IP.String())
 			err = client.startDownload(peer, curPiece)
 			if err != nil {
 				log.Println(err)
@@ -197,21 +207,20 @@ func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piec
 		} else {
 			return
 		}
-		log.Println("--------------------------")
 	}
 }
 
-func (client *Client) verifyPieceAndWriteDisk(piece *piece.Piece) {
+func (client *Client) verifyPieceAndWriteDisk(piece *piece.Piece) error {
 	// Verify downloaded piece against SHA1 hash
 	if piece.Verify() {
 		err := piece.WriteToDisk(client.TorrentFile.FileName, client.DownloadFile, client.TorrentFile.PieceLength)
 		if err != nil {
-			log.Println(err)
+			return err
 		}
 		log.Printf("Wrote piece [%d] to file\n", piece.Index)
-	} else {
-		log.Println("Error: piece does not match SHA1 hash, skipping")
+		return nil
 	}
+	return errors.New("Error: piece does not match SHA1 hash")
 }
 
 // startDownload begins downloading piece from peer
@@ -231,10 +240,9 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 	pieceIndex := curPiece.Index
 	blockOffset := curPiece.BlockIndex
 	curBlockSize := piece.Blocksize
-	log.Printf("starting download on piece [%d]\n", pieceIndex)
+	// log.Printf("starting downloading piece [%d]\n", pieceIndex)
 
 	for blockOffset < totalPieceSize {
-		log.Println("blockOffset: ", blockOffset)
 		requestMsg := make([]byte, 17)
 		binary.BigEndian.PutUint32(requestMsg[:4], 13)
 
@@ -264,7 +272,6 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])
 		// keep looping until piece is completely downloaded
 		blockOffset += curBlockSize
-		log.Println("~~~~~~~~~~~~~~~~~~~~~~~")
 	}
 	curPiece.IsComplete = true
 	curPiece.IsDownloading = false

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"crypto/sha1"
 	"os"
+	// "log"
 )
 
 // Piece represents a piece that is downloaded
@@ -24,6 +25,14 @@ const Blocksize = 16384 // Block size = 16KB
 // NewPiece constructor
 func NewPiece(index int, hash []byte) *Piece {
 	return &Piece{Index: index, BlockIndex: 0, IsComplete: false, IsDownloading: false, Hash: hash}
+}
+
+// Reset piece
+func (piece *Piece) Reset() {
+	piece.BlockIndex = 0
+	piece.Blocks = []byte{}
+	piece.IsComplete = false
+	piece.IsDownloading = false
 }
 
 // WriteToDisk writes piece to disk
