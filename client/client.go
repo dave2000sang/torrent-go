@@ -77,7 +77,7 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 				havePieces = append(havePieces, i)
 				piecesList[i].IsComplete = true
 			} else {
-				log.Println("Piece [", i, "] missing")
+				// log.Println("Piece [", i, "] missing")
 			}
 		}
 		log.Println("Previously downloaded pieces: ", havePieces)
@@ -217,7 +217,6 @@ func (client *Client) verifyPieceAndWriteDisk(piece *piece.Piece) error {
 		if err != nil {
 			return err
 		}
-		log.Printf("Wrote piece [%d] to file\n", piece.Index)
 		return nil
 	}
 	return errors.New("Error: piece does not match SHA1 hash")

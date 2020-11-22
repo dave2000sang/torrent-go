@@ -4,6 +4,7 @@ import (
 	"torrent-go/client"
 	"torrent-go/torrent"
 	"log"
+	"time"
 )
 
 // TEST flag
@@ -28,13 +29,16 @@ func main() {
 
 	log.Println("NUM PIECES: ", client.TorrentFile.NumPieces) // ~10000 for ubuntu image
 	log.Println("NUM PEERS: ", len(client.PeerList))
-	PeerConcurrentLimit := 10
+	PeerConcurrentLimit := 20
 	
 	if TEST {
 		if len(client.PeerList) > PeerConcurrentLimit {
 			client.PeerList = client.PeerList[:PeerConcurrentLimit]
 		}
 	}
+
+	startTime := time.Now()
 	// Connect to peers and download file
 	client.ConnectPeers()
+	log.Println("elapsed time: ", time.Since(startTime))
 }
