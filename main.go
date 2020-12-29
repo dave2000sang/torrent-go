@@ -5,13 +5,17 @@ import (
 	"torrent-go/torrent"
 	"log"
 	"time"
+	"torrent-go/dht"
 )
 
 // TEST flag
 const TEST = true
+// UseDHT flag
+const UseDHT = true
 
 func main() {
 	log.Println("TEST = ", TEST)
+	log.Println("UseDHT = ", UseDHT)
 	file := "example_torrents/ubuntu-20.04.1-desktop-amd64.iso.torrent"
 	// Create a new Client
 	curTorrent, err := torrent.ReadTorrentFile(file)
@@ -24,8 +28,15 @@ func main() {
 	}
 	defer client.DownloadFile.Close()
 
-	// Get peers list from tracker
-	client.ConnectTracker()
+	if UseDHT {
+		// Get peers from DHT (trackerless client)
+		log.Println("Starting DHT")
+		dht.Start()
+	} else {
+		// Get peers list from tracker
+		log.Println("Getting peers from tracker")
+		client.ConnectTracker()		
+	}
 
 	log.Println("NUM PIECES: ", client.TorrentFile.NumPieces) // ~10000 for ubuntu image
 	log.Println("NUM PEERS: ", len(client.PeerList))
