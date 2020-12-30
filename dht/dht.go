@@ -4,27 +4,42 @@
 package dht
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"time"
+	"io"
+	"crypto/sha1"
+	"encoding/binary"
 )
 
 // DHT node instance to find peers
 type DHT struct {
-	Rtable         *RoutingTable
-	nodeID         [20]byte
-	socket         *net.UDPConn
-	FoundPeers     chan Peer // return found peers through this channel
-	announcedPeers []Peer    // list of peers that announced to this DHT who have infohash
+	Rtable          *RoutingTable
+	nodeID          [20]byte
+	socket          *net.UDPConn
+	FoundPeers      chan Peer         	// return found peers through this channel
+	// map of info hash (str) to list of nodes who announced with the infohash
+	// used for keeping track of node's owned torrents, used for announce_peer queries
+	infoHashPeerContacts map[string][]Peer
+	secret				string		// seed used for generating tokens
 }
 
-// Peer is a bittorrent client
+// Peer represents a bittorrent client
 type Peer struct {
 	IP   net.IP
 	Port uint16
+}
+
+// Compact returns compact form of Peer (ip:port)
+func (peer *Peer) Compact() string {
+	compact := [6]byte{}
+	copy(compact[:4], peer.IP)
+	binary.BigEndian.PutUint16(compact[4:6], peer.Port)
+	return string(compact[:])
 }
 
 // NewDHT creates a new DHT instance
@@ -33,12 +48,15 @@ func NewDHT() *DHT {
 	nodeID := [20]byte{}
 	rand.Seed(time.Now().UnixNano())
 	rand.Read(nodeID[:])
+	secret := [10]byte{}
+	rand.Read(secret[:])
 	return &DHT{
-		NewRoutingTable(nodeID),
-		nodeID,
-		nil,
-		make(chan Peer),
-		[]Peer{},
+		Rtable: NewRoutingTable(nodeID),
+		nodeID: nodeID,
+		socket: nil,
+		FoundPeers: make(chan Peer),
+		infoHashPeerContacts: make(map[string][]Peer),
+		secret: string(secret[:]),
 	}
 }
 
@@ -171,7 +189,7 @@ func (dht *DHT) getPeers(node *Node, infoHash [20]byte) error {
 
 // AnnouncePeer sends DHT announce_peer query to node
 func (dht *DHT) announcePeer(node *Node, port uint16, token string, infoHash [20]byte) {
-
+	// TODO: Get token from tokenNodeMap
 }
 
 // handlePacket processes a received UDP packet, can be response or a query
@@ -185,6 +203,10 @@ func (dht *DHT) handlePacket(p packetNode) error {
 		node, ok := dht.Rtable.nodeMap[p.addr.String()]
 		if !ok {
 			return errors.New("Error: response query missing node")
+		}
+		// Check node id matches response node id
+		if msg.ResponseData.ID != string(node.ID[:]) {
+			return errors.New("Error: response node id mismatch")
 		}
 		// Verify that message was sent to this node previously
 		foundQuery, ok := node.sentQueries[msg.TransactionID]
@@ -230,7 +252,7 @@ func (dht *DHT) handlePacket(p packetNode) error {
 			// Verify node id matches (if node already exists)
 			if string(node.ID[:]) != queryNodeID {
 				log.Printf("Warning: query node id (%s) does not match existing node (%s)", queryNodeID, string(node.ID[:]))
-				// copy(node.ID[:], []byte(queryNodeID))
+				// copy(node.ID[:], []byte(queryNodeID)) // but then have to update node in rtable
 			}
 			switch msg.QueryName {
 			case "ping":
@@ -261,8 +283,7 @@ func (dht *DHT) handleFindNode(node *Node, response krpcMessage) {
 	body := response.ResponseData
 	if len(body.Nodes) > 0 {
 		for _, closeNode := range parseCompactNodes(body.Nodes) {
-			// TODO: how to handle find_nodes response
-			// Add to routing table?
+			// Add nodes to routing table
 			dht.Rtable.insertNode(closeNode)
 		}
 	} else {
@@ -272,19 +293,27 @@ func (dht *DHT) handleFindNode(node *Node, response krpcMessage) {
 
 func (dht *DHT) handleGetPeers(node *Node, response krpcMessage, foundQuery krpcQuery) {
 	body := response.ResponseData
-	infoHash, err := parseInfoHash(foundQuery)
+	infoHash, err := parseQueryHashValue("info_hash", foundQuery.QueryBody)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	// Store token in tokenNodeMap for use later when announce_peers
+	if body.Token == "" {
+		log.Println("Error: missing token in handleGetPeers")
+		return
+	}
 	dht.Rtable.tokenNodeMap[node.address.String()] = body.Token
 	// If values present, return peers to client
 	if len(body.Values) > 0 {
 		log.Println("get_peers response with peers")
 		// Parse and return peers to client through the FoundPeers channel
 		for _, peerStr := range body.Values {
-			peer := parsePeerStr(peerStr)
+			peer, err := parsePeerStr(peerStr)
+			if err != nil {
+				log.Println(err)
+				continue
+			}
 			dht.FoundPeers <- peer
 		}
 	} else {
@@ -306,24 +335,113 @@ func (dht *DHT) handleGetPeers(node *Node, response krpcMessage, foundQuery krpc
 
 //////////// Respond to remote node queries
 
-func (dht *DHT) respondPing(node *Node, response krpcMessage) {
-	queryBytes, _ := makeQuery("r", response.TransactionID, "ping", map[string]interface{}{"id": string(dht.nodeID[:])})
-	_, err := dht.socket.WriteToUDP(queryBytes, &node.address)
+func (dht *DHT) respondPing(node *Node, query krpcMessage) {
+	resBytes := makeResponse("r", query.TransactionID, responseBody{ID: string(dht.nodeID[:])})
+	_, err := dht.socket.WriteToUDP(resBytes, &node.address)
 	if err != nil {
 		log.Println("Failed to respond ping with error: ", err)
 	}
 }
 
-func (dht *DHT) respondFindNode(node *Node, response krpcMessage) {
-
+// respondFindNode returns the target node or K closest nodes to target
+func (dht *DHT) respondFindNode(node *Node, query krpcMessage) {
+	targetNodeID, err := parseQueryHashValue("target", query.QueryBody)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	var nodesBuffer bytes.Buffer
+	// Either return the target node if present, or its K closest nodes in rtable
+	if n := dht.Rtable.getNodeFromID(targetNodeID); n != nil {
+		nodesBuffer.WriteString(string(n.ID[:]) + n.address.String())
+	} else {
+		for _, n := range dht.Rtable.getClosestNodes(targetNodeID) {
+			nodesBuffer.WriteString(string(n.ID[:]) + n.address.String())
+		}
+	}
+	// Respond with nodes
+	resBytes := makeResponse("r", query.TransactionID, responseBody{
+		ID: string(dht.nodeID[:]),
+		Nodes: nodesBuffer.String(),
+	})
+	_, err = dht.socket.WriteToUDP(resBytes, &node.address)
+	if err != nil {
+		log.Println("Failed to respond find_node with error: ", err)
+	}
 }
 
-func (dht *DHT) respondGetPeers(node *Node, response krpcMessage) {
-
+// TODO:
+func (dht *DHT) respondGetPeers(node *Node, query krpcMessage) {
+	// Return peers if present under info hash, else return K closest nodes
+	infoHash, _ := parseQueryHashValue("info_hash", query.QueryBody)
+	// Create token
+	token := dht.createToken(node.address.String())
+	var resBytes []byte
+	if peers, ok := dht.infoHashPeerContacts[string(infoHash[:])]; ok {
+		peersParsed := make([]string, len(peers))
+		for _, p := range peers {
+			peersParsed = append(peersParsed, p.Compact())
+		}
+		resBytes = makeResponse("r", query.TransactionID, responseBody{
+			ID: string(dht.nodeID[:]),
+			Values: peersParsed,
+			Token: token,
+		})
+	} else {
+		// Get K closest nodes to info hash
+		var nodesBuffer bytes.Buffer
+		for _, n := range dht.Rtable.getClosestNodes(infoHash) {
+			nodesBuffer.WriteString(string(n.ID[:]) + n.address.String())
+		}
+		resBytes = makeResponse("r", query.TransactionID, responseBody{
+			ID: string(dht.nodeID[:]),
+			Nodes: nodesBuffer.String(),
+			Token: token,
+		})
+	}
+	// Respond with nodes
+	_, err := dht.socket.WriteToUDP(resBytes, &node.address)
+	if err != nil {
+		log.Println("Failed to respond find_node with error: ", err)
+	}
 }
 
-func (dht *DHT) respondAnnouncePeer(node *Node, response krpcMessage) {
-
+// respondAnnouncePeer handles announce_peer queries
+// Update infoHashPeerContacts with node's IP and port specified in query body
+func (dht *DHT) respondAnnouncePeer(node *Node, query krpcMessage) {
+	// Verify token matches
+	token, err := parseQueryKey("token", query.QueryBody)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if token != dht.createToken(node.address.String()) {
+		log.Println("Error: token does not match node's token")
+		return
+	}
+	// Save peer info under info hash in peer contacts
+	infoHash, err := parseQueryKey("info_hash", query.QueryBody)
+	port, err := parseQueryKeyInt("port", query.QueryBody)
+	if infoHash == "" || port == -1 {
+		log.Println(err)
+		return
+	}
+	newPeer := Peer{node.address.IP, uint16(port)}
+	dht.infoHashPeerContacts[infoHash] = append(dht.infoHashPeerContacts[infoHash], newPeer)
+	// Respond with empty message
+	resBytes := makeResponse("r", query.TransactionID, responseBody{ID: string(dht.nodeID[:])})
+	_, err = dht.socket.WriteToUDP(resBytes, &node.address)
+	if err != nil {
+		log.Println("Failed to respond ping with error: ", err)
+	}
 }
 
-////////////////////////////// Miscelaneous
+////////////////////////////// Miscelaneous //////////////////////////////
+
+// createToken returns a token seeded by key (node address)
+func (dht *DHT) createToken(key string) string {
+	h := sha1.New()
+	io.WriteString(h, key)
+	io.WriteString(h, dht.secret)
+	return fmt.Sprintf("%x", h.Sum(nil))
+}

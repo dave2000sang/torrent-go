@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net"
 	"math/big"
+	"sort"
 )
 
 // RoutingTable stores buckets containing 'good' nodes
@@ -84,6 +85,42 @@ func (rtable *RoutingTable) insertNode(newNode *Node) error {
 	return nil
 }
 
+// getClosestNodes returns the K closest nodes to hashID
+func (rtable *RoutingTable) getClosestNodes(hashID [20]byte) []Node {
+	closestNodes := make([]Node, K)
+	foundBucket, index := rtable.findBucket(hashID)
+	// Add all nodes in foundBucket
+	for _, n := range foundBucket.items {
+		if n.ID != hashID {
+			closestNodes = append(closestNodes, *n)
+		}
+	}
+	// Keep iterating until we have K closest nodes
+	for len(closestNodes) < K {
+		nextClosest := []Node{}	// stores potential next closest nodes
+		if index > 0 {
+			for _, node := range rtable.Buckets[index-1].items {
+				nextClosest = append(nextClosest, *node)
+			}
+		}
+		if index < len(rtable.Buckets)-1 {
+			for _, node := range rtable.Buckets[index+1].items {
+				nextClosest = append(nextClosest, *node)
+			}
+		}
+		// Sort nextClosest nodes
+		bigNodeID := new(big.Int).SetBytes(hashID[:])
+		sort.Slice(nextClosest, func (i, j int) bool {
+			bigI := new(big.Int).SetBytes(nextClosest[i].ID[:])
+			bigJ := new(big.Int).SetBytes(nextClosest[j].ID[:])
+			xorI, xorJ := bigI.Xor(bigI, bigNodeID), bigJ.Xor(bigJ, bigNodeID)
+			return xorI.Cmp(xorJ) <= 0
+		})
+		closestNodes = append(closestNodes, nextClosest[:K-len(closestNodes)]...)
+	}
+	return closestNodes
+}
+
 // findBucket finds the bucket a node id falls under and its index
 func (rtable *RoutingTable) findBucket(nodeID [20]byte) (*bucket, int) {
 	bucketList := rtable.Buckets
@@ -143,6 +180,17 @@ func (rtable *RoutingTable) splitBucket(curBucket bucket, index int) bool {
 	copy(buckets[index+2:], buckets[index+1:])
 	buckets[index+1] = &upperBucket
 	return true
+}
+
+// getNodeFromID finds and returns node from its ID if present
+func (rtable *RoutingTable) getNodeFromID(nodeID [20]byte) *Node {
+	b, _ := rtable.findBucket(nodeID)
+	for _, n := range b.items {
+		if n.ID == nodeID {
+			return n
+		}
+	}
+	return nil
 }
 
 // makeID returns the node ID (160-bits) representation of 2^pow - rem

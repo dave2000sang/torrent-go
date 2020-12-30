@@ -6,9 +6,10 @@ import (
 	"net"
 	// "time"
 	"bytes"
-	"errors"
+	// "errors"
 	"log"
-	"strconv"
+	"encoding/binary"
+	"fmt"
 
 	"github.com/jackpal/bencode-go"
 )
@@ -73,6 +74,17 @@ func makeQuery(msgType, transactionID, queryName string, queryBody map[string]in
 	return buf.Bytes(), newQuery
 }
 
+func makeResponse(msgType, transactionID string, resBody responseBody) []byte {
+	res := krpcMessage{
+		MessageType: msgType,
+		TransactionID: transactionID, 
+		ResponseData: resBody,
+	}
+	var buf bytes.Buffer
+	bencode.Marshal(&buf, res)
+	return buf.Bytes()
+}
+
 // Returns a new transaction id and updates node counter
 func makeTransactionID(node *Node) string {
 	node.counter += 1 % 26
@@ -102,11 +114,14 @@ func listenSocket(socket *net.UDPConn, packetChan chan packetNode) {
 	}
 }
 
-//======================= Parse krpc message ====================================================
-func parsePeerStr(peerStr string) Peer {
-	ip := net.ParseIP(peerStr[0 : 4])
-	port, _ := strconv.ParseUint(peerStr[4:6], 10, 16)
-	return Peer{ip, uint16(port)}
+//======================= Parse krpc message =======================
+func parsePeerStr(peerStr string) (Peer, error) {
+	if len(peerStr) != 6 {
+		return Peer{}, fmt.Errorf("Error parsing peerStr %s", peerStr)
+	}
+	ip := net.IP([]byte(peerStr[0:4]))
+	port := binary.BigEndian.Uint16([]byte(peerStr[4:6]))
+	return Peer{ip, uint16(port)}, nil
 }
 
 // parseCompactNodes parses krpc response nodes, returning list of node pointers
@@ -128,14 +143,33 @@ func parseCompactNodes(nodeStr string) []*Node {
 	return nodes
 }
 
-// parseInfoHash parses query argument for info hash key
-func parseInfoHash(query krpcQuery) ([20]byte, error) {
-	infoHash := [20]byte{}
-	infoHashRaw, ok := query.QueryBody["info_hash"]
-	if !ok {
-		return infoHash, errors.New("Error: failed to parse info hash from query")
+// parseQueryKey parses query argument for key
+func parseQueryHashValue(key string, query map[string]interface{}) ([20]byte, error) {
+	res := [20]byte{}
+	if keyRaw, ok := query[key]; ok {
+		if value, ok := keyRaw.(string); ok {
+			copy(res[:], value)
+			return res, nil
+		}
 	}
-	infoHashStr, _ := infoHashRaw.(string)
-	copy(infoHash[:], infoHashStr)
-	return infoHash, nil
+	return res, fmt.Errorf("Error: failed to find key %s from query", key)
+}
+
+// parseQueryKey parses query argument for key
+func parseQueryKey(key string, query map[string]interface{}) (string, error) {
+	if keyRaw, ok := query[key]; ok {
+		if value, ok := keyRaw.(string); ok {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("Error: failed to find key %s from query", key)
+}
+
+func parseQueryKeyInt(key string, query map[string]interface{}) (int, error) {
+	if keyRaw, ok := query[key]; ok {
+		if value, ok := keyRaw.(int); ok {
+			return value, nil
+		}
+	}
+	return -1, fmt.Errorf("Error: failed to find key %s from query", key)
 }
