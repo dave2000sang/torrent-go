@@ -3,13 +3,13 @@
 package dht
 
 import (
-	"net"
-	// "time"
 	"bytes"
-	// "errors"
-	"log"
 	"encoding/binary"
 	"fmt"
+	"log"
+	"net"
+	"sync"
+	"time"
 
 	"github.com/jackpal/bencode-go"
 )
@@ -50,11 +50,11 @@ type packetNode struct {
 
 // Node is a remote DHT node that we store in routing table
 type Node struct {
-	ID      [20]byte
-	address net.UDPAddr
-	// past queries sent to this node by me, key: transaction id
-	sentQueries map[string]krpcQuery
-	counter     int // transaction id counter
+	ID          [20]byte
+	address     net.UDPAddr
+	sentQueries map[string]krpcQuery // stores past queries sent to this node by me, key: transaction id
+	counter     int                  // transaction id counter
+	lastContact time.Time            // Used for LRU cache buckets in rtable
 }
 
 // NewNode creates a new node
@@ -64,7 +64,12 @@ func NewNode(id [20]byte, addr net.UDPAddr) *Node {
 		address:     addr,
 		sentQueries: make(map[string]krpcQuery),
 		counter:     0,
+		lastContact: time.Now(),
 	}
+}
+
+func (node *Node) updateLRU() {
+	node.lastContact = time.Now()
 }
 
 func makeQuery(msgType, transactionID, queryName string, queryBody map[string]interface{}) ([]byte, krpcQuery) {
@@ -76,19 +81,27 @@ func makeQuery(msgType, transactionID, queryName string, queryBody map[string]in
 
 func makeResponse(msgType, transactionID string, resBody responseBody) []byte {
 	res := krpcMessage{
-		MessageType: msgType,
-		TransactionID: transactionID, 
-		ResponseData: resBody,
+		MessageType:   msgType,
+		TransactionID: transactionID,
+		ResponseData:  resBody,
 	}
 	var buf bytes.Buffer
 	bencode.Marshal(&buf, res)
 	return buf.Bytes()
 }
 
-// Returns a new transaction id and updates node counter
+// Returns a unique transaction id and updates node counter
 func makeTransactionID(node *Node) string {
-	node.counter += 1 % 26
-	return string('a' + rune(node.counter))
+	t := string('0' + rune(node.counter))
+	for {
+		// t must not exist in sentQueries
+		if _, ok := node.sentQueries[t]; !ok {
+			break
+		}
+		node.counter += 1 % 77 // printable ascii character
+		t = string('0' + rune(node.counter))
+	}
+	return t
 }
 
 func decodeMessage(data []byte) (krpcMessage, error) {
@@ -98,8 +111,9 @@ func decodeMessage(data []byte) (krpcMessage, error) {
 	return response, err
 }
 
-// listenSocket reads UDP packets and sends them to packetChan
-func listenSocket(socket *net.UDPConn, packetChan chan packetNode) {
+// listenSocket reads UDP packets and sends them to packetChan, runs concurrently with dht.mainLoop()
+func listenSocket(socket *net.UDPConn, packetChan chan packetNode, wg *sync.WaitGroup, stopDHT chan bool) {
+	defer wg.Done()
 	for {
 		b := make([]byte, MaxPacketSize)
 		n, addr, err := socket.ReadFromUDP(b)
@@ -109,7 +123,17 @@ func listenSocket(socket *net.UDPConn, packetChan chan packetNode) {
 		b = b[:n]
 		if n > 0 && err == nil {
 			p := packetNode{b, *addr}
-			packetChan <- p
+			select {
+			case packetChan <- p: // send packet back to packetChan
+			case <-stopDHT:
+				return
+			}
+		}
+		// Return if stopDHT
+		select {
+		case <-stopDHT:
+			return
+		default:
 		}
 	}
 }

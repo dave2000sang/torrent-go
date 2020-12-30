@@ -12,7 +12,7 @@ type RoutingTable struct {
 	Buckets  	 []*bucket
 	myNodeID 	 [20]byte			// copy of dht node id
 	nodeMap  	 map[string]*Node	// maps address to node, key: UDPAddress string(ip:port)
-	tokenNodeMap map[string]string	// maps node address to token (for announce_peer)
+	tokenNodeMap map[string]*Node	// maps token to node (for announce_peer)
 }
 
 // bucket contains nodes in the routing table
@@ -37,7 +37,7 @@ func NewRoutingTable(myNodeID [20]byte) *RoutingTable {
 		[]*bucket{&newBucket}, 
 		myNodeID,
 		make(map[string]*Node),
-		make(map[string]string),
+		make(map[string]*Node),
 	}
 }
 
@@ -68,18 +68,23 @@ func (rtable *RoutingTable) insertNode(newNode *Node) error {
 	if len(curBucket.items) < K {
 		curBucket.items = append(curBucket.items, newNode)
 	} else {
-		// TODO: A bit more complicated if curBucket is full
+		// A bit more complicated if curBucket is full
 		// 1. If thisNode ID falls in curBucket's ID space, split curBucket in 2
 		// 2. If there are any bad/questionable nodes in curBucket, replace it with newNode (after pinging)
 		// 3. Else, discard newNode since all nodes in curBucket are good, remove from nodeMap
 		if bytes.Compare(rtable.myNodeID[:], curBucket.minValue[:]) >= 0 &&
 			bytes.Compare(rtable.myNodeID[:], curBucket.maxValue[:]) < 0 {
 			rtable.splitBucket(*curBucket, index)
-			// Insert newNode
+			// Insert newNode again
 			rtable.insertNode(newNode)
 		} else {
 			// Check for questionable/bad nodes and ping them
-
+			// For now, just replace the LRU node with newNode
+			nodeLRU, indexLRU := getLRUNodeInBucket(curBucket.items)
+			curBucket.items[indexLRU] = newNode
+			// delete nodeLRU from rtable
+			delete(rtable.nodeMap, nodeLRU.address.String())
+			delete(rtable.tokenNodeMap, nodeLRU.address.String())
 		}
 	}
 	return nil
@@ -122,6 +127,7 @@ func (rtable *RoutingTable) getClosestNodes(hashID [20]byte) []Node {
 }
 
 // findBucket finds the bucket a node id falls under and its index
+// Time complexity: O(log N) where N is number of buckets
 func (rtable *RoutingTable) findBucket(nodeID [20]byte) (*bucket, int) {
 	bucketList := rtable.Buckets
 	nodeIDStr := string(nodeID[:])
@@ -221,3 +227,15 @@ func getMiddle(low, high [20]byte) [20]byte {
 	return middleBytes
 }
 
+// getLRUNodeInBucket returns node with least recent lastContact, nodes must not be empty 
+func getLRUNodeInBucket(nodes []*Node) (*Node, int) {
+	nodeLRU := nodes[0]
+	indexLRU := 0
+	for i, node := range nodes {
+		if nodeLRU.lastContact.Before(node.lastContact) {
+			nodeLRU = node
+			indexLRU = i
+		}
+	}
+	return nodeLRU, indexLRU
+}
