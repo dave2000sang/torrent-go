@@ -80,7 +80,7 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 				// log.Println("Piece [", i, "] missing")
 			}
 		}
-		log.Println("Previously downloaded pieces: ", havePieces)
+		// log.Println("Previously downloaded pieces: ", havePieces)
 	}
 	file, err := os.Create(filePath)
 	if err != nil {

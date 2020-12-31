@@ -10,6 +10,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"strconv"
 
 	"github.com/jackpal/bencode-go"
 )
@@ -25,7 +26,7 @@ type krpcMessage struct {
 	QueryBody     map[string]interface{} `bencode:"a"`
 	ResponseData  responseBody           `bencode:"r"`
 	// Complicated to unmarshal error of [int, string]
-	// Errors        []string	  `bencode:"e"`
+	Errors        []string	  `bencode:"e"`
 }
 
 // krpcQuery used for bencode
@@ -72,6 +73,10 @@ func (node *Node) updateLRU() {
 	node.lastContact = time.Now()
 }
 
+func (node *Node) String() string {
+	return "Node(" + node.address.String() +")"
+}
+
 func makeQuery(msgType, transactionID, queryName string, queryBody map[string]interface{}) ([]byte, krpcQuery) {
 	newQuery := krpcQuery{msgType, transactionID, queryName, queryBody}
 	var buf bytes.Buffer
@@ -105,9 +110,20 @@ func makeTransactionID(node *Node) string {
 }
 
 func decodeMessage(data []byte) (krpcMessage, error) {
+	// Catch bencode unmarshalling panics
+	defer func() {
+		if x := recover(); x != nil {
+			log.Println("HANDLING PANIC DECODING MESSAGE", x)
+			var buf bytes.Buffer
+			decoded, err := bencode.Decode(&buf)
+			log.Println(decoded, err)
+			log.Printf("run time panic: %v\n", x)
+		}
+	}()
 	response := krpcMessage{}
 	var buf bytes.Buffer
-	err := bencode.Unmarshal(&buf, response)
+	buf.Write(data)
+	err := bencode.Unmarshal(&buf, &response)
 	return response, err
 }
 
@@ -118,7 +134,8 @@ func listenSocket(socket *net.UDPConn, packetChan chan packetNode, wg *sync.Wait
 		b := make([]byte, MaxPacketSize)
 		n, addr, err := socket.ReadFromUDP(b)
 		if err != nil {
-			log.Println(err)
+			log.Println("Error listenSocket: ", err)
+			continue
 		}
 		b = b[:n]
 		if n > 0 && err == nil {
@@ -139,30 +156,42 @@ func listenSocket(socket *net.UDPConn, packetChan chan packetNode, wg *sync.Wait
 }
 
 //======================= Parse krpc message =======================
-func parsePeerStr(peerStr string) (Peer, error) {
-	if len(peerStr) != 6 {
-		return Peer{}, fmt.Errorf("Error parsing peerStr %s", peerStr)
+func parseUDPAddress(addrStr string) (net.IP, uint16, error) {
+	if len(addrStr) != 6 {
+		return nil, 0, fmt.Errorf("Error parsing addrStr %s", addrStr)
 	}
-	ip := net.IP([]byte(peerStr[0:4]))
-	port := binary.BigEndian.Uint16([]byte(peerStr[4:6]))
+	ip := net.IP([]byte(addrStr[0:4]))
+	port := binary.BigEndian.Uint16([]byte(addrStr[4:6]))
+	return ip, port, nil
+}
+
+func parsePeerStr(peerStr string) (Peer, error) {
+	ip, port, err := parseUDPAddress(peerStr)
+	if err != nil {
+		return Peer{}, err
+	}
 	return Peer{ip, uint16(port)}, nil
 }
 
 // parseCompactNodes parses krpc response nodes, returning list of node pointers
 func parseCompactNodes(nodeStr string) []*Node {
-	nodes := make([]*Node, len(nodeStr)/26)
+	nodes := []*Node{}
 	for i := 0; i <= len(nodeStr)-26; i += 26 {
 		nodeID := [20]byte{}
 		nodeIDStr := nodeStr[i : i+20]
 		copy(nodeID[:], nodeIDStr)
-		ip := nodeStr[i+20 : i+24]
-		port := nodeStr[i+24 : i+26]
-		addr, err := net.ResolveUDPAddr("udp", ip+":"+port)
+		ip, port, err := parseUDPAddress(nodeStr[i+20:i+26])
 		if err != nil {
-			log.Println("Warning: node ", nodeIDStr, " failed with error: ", err)
+			log.Println("Error parseCompactNodes: cannot parse ", nodeStr[i+20:i+26], " UDP address: ", err)
 			continue
 		}
-		nodes = append(nodes, NewNode(nodeID, *addr))
+		addr, err := net.ResolveUDPAddr("udp", ip.String()+":"+strconv.Itoa(int(port)))
+		if err != nil {
+			log.Println("Error parseCompactNodes: cannot resolve ", nodeStr[i+20:i+26], " UDP address: ", err)
+			continue
+		}
+		n := NewNode(nodeID, *addr)
+		nodes = append(nodes, n)
 	}
 	return nodes
 }

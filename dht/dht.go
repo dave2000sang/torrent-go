@@ -1,4 +1,5 @@
-// Distributed Hash Table implementation for finding peers
+// Mainline Distributed Hash Table implementation for finding peers
+// Based on Kademlia DHT
 // Read more: http://www.bittorrent.org/beps/bep_0005.html
 
 package dht
@@ -30,6 +31,7 @@ type DHT struct {
 	secret               string         // seed used for generating tokens
 	wg                   sync.WaitGroup // sync with listenSocket goroutine
 	stopDHT              chan bool      // stop the DHT node
+	DoneBootstrapping	 chan bool		// notify client that bootstrap finished
 }
 
 // Peer represents a bittorrent client
@@ -62,6 +64,7 @@ func NewDHT() *DHT {
 		infoHashPeerContacts: make(map[string][]Peer),
 		secret:               string(secret[:]),
 		stopDHT:              make(chan bool),
+		DoneBootstrapping:	  make(chan bool),
 	}
 }
 
@@ -87,7 +90,7 @@ func (dht *DHT) mainLoop() {
 	defer dht.wg.Done()
 	// Initialize rtable with bootstrap nodes
 	dht.bootstrap()
-
+	
 	packetChan := make(chan packetNode)
 	dht.wg.Add(1)
 	go listenSocket(dht.socket, packetChan, &dht.wg, dht.stopDHT)
@@ -98,6 +101,7 @@ loop:
 		case p := <-packetChan:
 			err := dht.handlePacket(p)
 			if err != nil {
+				// log.Println("Error handling packet:")
 				log.Println(err)
 			}
 		case <-dht.stopDHT:
@@ -113,7 +117,7 @@ func (dht *DHT) bootstrap() {
 		"router.utorrent.com:6881",
 		"router.bittorrent.com:6881",
 		"dht.transmissionbt.com:6881",
-		"router.bitcomet.com:6881",
+		// "router.bitcomet.com:6881",
 		"dht.aelitis.com:6881",
 	}
 	// Initialize routing table with bootstrap nodes
@@ -121,6 +125,25 @@ func (dht *DHT) bootstrap() {
 		// Ping bootstrap node, inserting the node in routing table
 		dht.pingAddr(bootstrapAddr)
 	}
+}
+
+// getMoreNodes attempts to populate DHT with more nodes
+func (dht *DHT) getMoreNodes() {
+	log.Println("Getting more nodes to populate DHT")
+	log.Println("Currently have", dht.Rtable.Size, "nodes in DHT")
+	// Split the bucket containing this DHT node if full
+	thisBucket, index := dht.Rtable.findBucket(dht.nodeID)
+	dht.Rtable.printBuckets()
+	log.Println("num buckets:", len(dht.Rtable.Buckets),"thisBucket index:", index)
+	if len(thisBucket.items) == K {
+		// TODO: split did not work
+		log.Println("HERE")
+		dht.Rtable.splitBucket(*thisBucket, index)
+	}
+	for _, node := range dht.Rtable.getClosestNodes(dht.nodeID) {
+		dht.findNode(node, dht.nodeID)
+	}
+	// TODO: Also fill in other buckets
 }
 
 func (dht *DHT) createServer() error {
@@ -137,12 +160,16 @@ func (dht *DHT) createServer() error {
 
 // pingAddr pings the node at nodeAddr
 func (dht *DHT) pingAddr(nodeAddr string) {
-	node, err := dht.Rtable.getNodeOrCreate(nodeAddr, [20]byte{})
+	node, exists, err := dht.Rtable.getNodeOrCreate(nodeAddr, [20]byte{})
 	if err != nil {
-		log.Println("Failed to ping node ", nodeAddr, err)
+		log.Println("Failed to find node ", nodeAddr, err)
+		return
 	}
-	if err = dht.pingNode(node); err != nil {
-		log.Println(err)
+	if !exists {
+		if err = dht.pingNode(node); err != nil {
+			log.Println("Failed pinging node ", nodeAddr, err)
+			return
+		}
 	}
 }
 
@@ -177,17 +204,14 @@ func (dht *DHT) findNode(node *Node, targetNodeID [20]byte) error {
 
 // TriggerGetPeers begins fetching for peers, returning peers found in a channel
 func (dht *DHT) TriggerGetPeers(infoHash [20]byte) {
-	// TODO: Which node to send get_peers message to? For now, just get random node
-	// Should also send to all nodes in the bucket infoHash falls under?
-	var node *Node
-	for k := range dht.Rtable.nodeMap {
-		node = dht.Rtable.nodeMap[k]
-		break
-	}
-	log.Println("Triggered getPeers on node ", string(node.ID[:]))
-	err := dht.getPeers(node, infoHash)
-	if err != nil {
-		log.Println("FindPeers failed with error, ", err)
+	log.Println("triggering get_peers")
+	// Send to all nodes in the bucket infoHash in
+	for _, node := range dht.Rtable.getClosestNodes(infoHash) {
+		log.Println("Sending get_peers on node ", string(node.ID[:]))
+		err := dht.getPeers(node, infoHash)
+		if err != nil {
+			log.Println("FindPeers failed with error, ", err)
+		}
 	}
 }
 
@@ -242,46 +266,43 @@ func (dht *DHT) announcePeer(node *Node, port uint16, token string, infoHash [20
 func (dht *DHT) handlePacket(p packetNode) error {
 	msg, err := decodeMessage(p.b)
 	if err != nil {
+		log.Println("Failed decoding message")
 		return err
 	}
 	if msg.MessageType == "r" {
+		log.Println("Received response from node", p.addr.String())
 		// Handle response message
 		node, ok := dht.Rtable.nodeMap[p.addr.String()]
 		if !ok {
 			return errors.New("Error: response query missing node")
-		}
-		// Check node id matches response node id
-		if msg.ResponseData.ID != string(node.ID[:]) {
-			return errors.New("Error: response node id mismatch")
 		}
 		// Verify that message was sent to this node previously
 		foundQuery, ok := node.sentQueries[msg.TransactionID]
 		if !ok {
 			return errors.New("Error: could not verify message history")
 		}
+		// Check node id matches response node id (except for ping response, where we must set the ID)
+		if foundQuery.QueryName != "ping" && msg.ResponseData.ID != string(node.ID[:]) {
+			return fmt.Errorf("Error: response node id mismatch, %s != %s", msg.ResponseData.ID, string(node.ID[:]))
+		}
 		node.updateLRU() // Update node's lastContact timestamp
+		
 		// Handle different responses
+		log.Printf("Received %s response\n", foundQuery.QueryName)
 		switch foundQuery.QueryName {
 		case "ping":
-			fmt.Println("Received ping response")
-			// Update node ID if missing (response ping messages)
-			if node.ID == [20]byte{} {
-				copy(node.ID[:], []byte(msg.ResponseData.ID))
-			}
+			dht.handlePing(node, msg)
 		case "find_node":
-			log.Println("Received find_node response")
 			dht.handleFindNode(node, msg)
 		case "get_peers":
-			log.Println("Received get_peers response")
 			dht.handleGetPeers(node, msg, foundQuery)
-		case "announce_peer":
-			log.Println("Received announce_peer response")
-			// nothing to do
+		case "announce_peer":	// nothing to do
 		default:
 			log.Println("Error: Unknown query type")
 		}
 
 	} else if msg.MessageType == "q" {
+		log.Println("Received query from node ", p.addr.String())
 		// This is a query from remote node
 		if queryNodeID, ok := msg.QueryBody["id"]; ok {
 			queryNodeID, ok := queryNodeID.(string)
@@ -289,13 +310,16 @@ func (dht *DHT) handlePacket(p packetNode) error {
 				return fmt.Errorf("Error: Unknown datatype query node id: %v", queryNodeID)
 			}
 			log.Printf("Received %s query from node id: %s\n", msg.QueryName, queryNodeID)
-			// node, ok := dht.Rtable.nodeMap[p.addr.String()]
 			nodeID := [20]byte{}
 			copy(nodeID[:], queryNodeID)
 			// Get or create the node
-			node, err := dht.Rtable.getNodeOrCreate(p.addr.String(), nodeID)
+			node, exists, err := dht.Rtable.getNodeOrCreate(p.addr.String(), nodeID)
 			if err != nil {
 				return err
+			}
+			// insert node in rtable
+			if !exists {
+				dht.Rtable.insertNode(node)
 			}
 			// Verify node id matches (if node already exists)
 			if string(node.ID[:]) != queryNodeID {
@@ -321,7 +345,7 @@ func (dht *DHT) handlePacket(p packetNode) error {
 		}
 	} else {
 		// "e" error case
-		log.Println("Received Error packet from ", p.addr)
+		log.Println("Received Error packet from ", p.addr.String())
 		log.Println(msg)
 	}
 	return nil
@@ -329,17 +353,41 @@ func (dht *DHT) handlePacket(p packetNode) error {
 
 //////////// Handle remote node responses
 
+func (dht *DHT) handlePing(node *Node, response krpcMessage) {
+	// Update node ID if missing (response ping messages)
+	if node.ID == [20]byte{} {
+		copy(node.ID[:], []byte(response.ResponseData.ID))
+	}
+	// add node to routing table
+	dht.Rtable.addNodeToDHT(node.address.String(), node.ID)
+	// Send find_node message to fill DHT with nodes closest to my id
+	dht.findNode(node, dht.nodeID)
+}
+
 func (dht *DHT) handleFindNode(node *Node, response krpcMessage) {
 	body := response.ResponseData
 	if len(body.Nodes) > 0 {
 		for _, closeNode := range parseCompactNodes(body.Nodes) {
-			// Add nodes to routing table
-			dht.Rtable.insertNode(closeNode)
+			// fmt.Println("got node: ", closeNode)
+			// Add nodes to routing table if not already
+			err := dht.Rtable.addNodeToDHT(closeNode.address.String(), closeNode.ID)
+			if err != nil {
+				log.Println(err)
+			}
 		}
 	} else {
 		log.Println("find_node responded with empty nodes")
 	}
-}
+	// Check if we have enough bootstrapped nodes
+	if dht.Rtable.Size > MinTableSize {
+		select {
+		case dht.DoneBootstrapping <- true:
+		default:
+		}
+	} else {
+		dht.getMoreNodes()
+}	}
+// TODO: Also fill in other buckets
 
 func (dht *DHT) handleGetPeers(node *Node, response krpcMessage, foundQuery krpcQuery) {
 	body := response.ResponseData
@@ -371,9 +419,11 @@ func (dht *DHT) handleGetPeers(node *Node, response krpcMessage, foundQuery krpc
 			log.Println("get_peers response with nodes")
 			// Read Nodes in response (K closest nodes to infoHash)
 			for _, closeNode := range parseCompactNodes(body.Nodes) {
-				// Q: Do we want to insert node into routing table?
-				// node, err := dht.Rtable.getNodeOrCreate(node.address.String(), node.ID)
-
+				// Add nodes to routing table if not already
+				err := dht.Rtable.addNodeToDHT(closeNode.address.String(), closeNode.ID)
+				if err != nil {
+					log.Println(err)
+				}
 				// Call get_peers on node
 				dht.getPeers(closeNode, infoHash)
 			}
