@@ -41,6 +41,10 @@ func NewPeer(ip net.IP, port uint16) (*Peer, error) {
 	return &peer, nil
 }
 
+func (peer *Peer) String() string {
+	return peer.IP.String() + ":" + strconv.Itoa(int(peer.Port))
+}
+
 // TCPConnect connects client to peer and returns the TCPConn instance
 func (peer *Peer) TCPConnect() (*net.TCPConn, error) {
 	peerAddr := peer.IP.String() + ":" + strconv.Itoa(int(peer.Port))
@@ -58,16 +62,21 @@ func (peer *Peer) TCPConnect() (*net.TCPConn, error) {
 }
 
 // DoHandshake sends initial handshake with peer
-func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
+func (peer *Peer) DoHandshake(infoHash, clientID [20]byte, UseDHT bool) error {
 	handshake := []byte{}
 	handshake = append(handshake, []byte{byte(19)}...)
 	handshake = append(handshake, []byte("BitTorrent protocol")...)
-	handshake = append(handshake, []byte{0, 0, 0, 0, 0, 0, 0, 0}...)
+	if UseDHT {
+		// Set last reserved bit for DHT
+		handshake = append(handshake, []byte{0, 0, 0, 0, 0, 0, 0, 1}...)
+	} else {
+		handshake = append(handshake, []byte{0, 0, 0, 0, 0, 0, 0, 0}...)
+	}
 	handshake = append(handshake, infoHash[:]...)
 	handshake = append(handshake, clientID[:]...)
 
 	// Create TCP connection with peer
-	log.Println("Performing handshake with peer: ", peer.IP.String())
+	log.Println("Performing handshake with peer: ", peer)
 	conn, err := peer.TCPConnect()
 	peer.Connection = conn
 	if err != nil {
@@ -140,7 +149,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte) error {
 	if !bytes.Equal(infoHash[:], peerInfoHash[:]) {
 		return errors.New("ERROR: response info hash does not match")
 	}
-	log.Println("Received handshake from peer")
+	log.Println("Received handshake from peer", peer)
 
 	
 	// Send "interested" message

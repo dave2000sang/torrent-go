@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"net"
 	"math/big"
+	"math/rand"
 	"sort"
 	"log"
+	"time"
 )
 
 // RoutingTable stores buckets containing 'good' nodes
@@ -46,14 +48,14 @@ func NewRoutingTable(myNodeID [20]byte) *RoutingTable {
 	}
 }
 
-// getNode returns node or creates a new one and sets its id, also returns if node already exists
+// getNode returns node or creates a new one and sets its id, also returns if node is in rtable
 func (rtable *RoutingTable) getNodeOrCreate(addrStr string, id [20]byte) (*Node, bool, error) {
 	addr, err := net.ResolveUDPAddr("udp", addrStr)
 	if err != nil {
 		return nil, false, err
 	}
 	if node, ok := rtable.nodeMap[addrStr]; ok {
-		return node, true, nil
+		return node, node.inserted, nil
 	}
 	// Create a new node, insert into nodeMap
 	node := NewNode(id, *addr)
@@ -87,6 +89,7 @@ func (rtable *RoutingTable) insertNode(newNode *Node) error {
 	if len(curBucket.items) < K {
 		curBucket.items = append(curBucket.items, newNode)
 		rtable.Size++
+		newNode.inserted = true
 	} else {
 		// A bit more complicated if curBucket is full
 		// 1. If thisNode ID falls in curBucket's ID space, split curBucket in 2
@@ -101,12 +104,21 @@ func (rtable *RoutingTable) insertNode(newNode *Node) error {
 			// For now, just replace the LRU node with newNode (instead of cases 2 and 3)
 			nodeLRU, indexLRU := getLRUNodeInBucket(curBucket.items)
 			curBucket.items[indexLRU] = newNode
+			newNode.inserted = true
+
 			// delete nodeLRU from rtable
-			delete(rtable.nodeMap, nodeLRU.address.String())
-			delete(rtable.tokenNodeMap, nodeLRU.address.String())
+			rtable.removeNode(nodeLRU)
+			log.Printf("Rtable: replaced %v with %v", nodeLRU, newNode)
 		}
 	}
 	return nil
+}
+
+// removeNode from rtable and from any node maps
+func (rtable *RoutingTable) removeNode(node *Node) {
+	node.inserted = false
+	delete(rtable.nodeMap, node.address.String())
+	delete(rtable.tokenNodeMap, node.address.String())
 }
 
 // getClosestNodes returns the K closest nodes to hashID
@@ -281,4 +293,16 @@ func (rtable *RoutingTable) printBuckets() {
 		log.Println("items:",b.items)
 		log.Println("-------------------------")
 	}
+}
+
+// generateRandomNodeID returns a random node id in the space [lower, upper]
+func generateRandomNodeID(lower, upper [20]byte) [20]byte {
+	lowerB := new(big.Int).SetBytes(lower[:])
+	upperB := new(big.Int).SetBytes(upper[:])
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	res := new(big.Int).Rand(r, big.NewInt(0).Sub(upperB, lowerB))
+	res = res.Add(res, lowerB)
+	resBytes := [20]byte{}
+	res.FillBytes(resBytes[:])
+	return resBytes
 }

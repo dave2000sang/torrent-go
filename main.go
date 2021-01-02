@@ -34,27 +34,29 @@ func main() {
 
 	if UseDHT {
 		// Get peers from DHT (trackerless client)
-		log.Println("===========================================================================")
-		log.Println("Starting DHT")
 		// Start the DHT node
 		myDHT := dht.NewDHT()
 		if err := myDHT.Start(); err != nil {
 			log.Fatal("Failed to start DHT node ", err)
 		}
 		// Listen for peers on dht.FoundPeers channel
-		select {
-		case foundPeer := <-myDHT.FoundPeers:
-			log.Println("FOUND PEER ", foundPeer.IP)
-			newPeer, _ := peer.NewPeer(foundPeer.IP, foundPeer.Port)
-			client.PeerList = append(client.PeerList, newPeer)
-			if len(client.PeerList) >= FoundPeerMin {
-				myDHT.Stop()
-				break
+		dhtLoop:
+		for {
+			select {
+			case foundPeer := <-myDHT.FoundPeers:
+				newPeer, _ := peer.NewPeer(foundPeer.IP, foundPeer.Port)
+				log.Println("FOUND PEER ", newPeer)
+				client.AddNewPeer(newPeer)
+				log.Println("TOTAL NUM PEERS:", len(client.PeerList))
+				if len(client.PeerList) >= FoundPeerMin {
+					myDHT.Stop()
+					break dhtLoop
+				}
+			case <-myDHT.DoneBootstrapping:
+				log.Println("Done bootstrapping")
+				// Request peers with info hash
+				myDHT.TriggerGetPeers(client.TorrentFile.InfoHash)
 			}
-		case <-myDHT.DoneBootstrapping:
-			log.Println("Done bootstrapping")
-			// Request peers with info hash
-			myDHT.TriggerGetPeers(client.TorrentFile.InfoHash)
 		}
 	} else {
 		// Get peers list from tracker
@@ -73,6 +75,6 @@ func main() {
 
 	startTime := time.Now()
 	// Connect to peers and download file
-	client.ConnectPeers()
+	client.ConnectPeers(UseDHT)
 	log.Println("elapsed time: ", time.Since(startTime))
 }

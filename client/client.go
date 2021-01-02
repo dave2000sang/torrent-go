@@ -144,7 +144,7 @@ func (client *Client) ConnectTracker() {
 }
 
 // ConnectPeers connects to each peer, initiates handshake
-func (client *Client) ConnectPeers() {
+func (client *Client) ConnectPeers(UseDHT bool) {
 	pieceQueue := make(chan *piece.Piece)
 	results := make(chan *piece.Piece)
 
@@ -159,7 +159,7 @@ func (client *Client) ConnectPeers() {
 
 	// Trigger main worker to handshake and download pieces concurrently
 	for _, peer := range client.PeerList {
-		go client.mainWorker(peer, pieceQueue, results)
+		go client.mainWorker(peer, pieceQueue, results, UseDHT)
 	}
 	
 	// listen for finished download pieces
@@ -179,10 +179,10 @@ func (client *Client) ConnectPeers() {
 }
 
 // mainWorker is run concurrently with ConnectPeers()
-func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piece.Piece) {
+func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piece.Piece, UseDHT bool) {
 	log.Println("Running mainWorker on peer", peer.IP)
 	// handshake with peer
-	err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+	err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID, UseDHT)
 	if err != nil {
 		log.Println(err)
 		return
@@ -276,6 +276,17 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 	curPiece.IsDownloading = false
 	log.Println("Finished downloading piece: ", pieceIndex)
 	return nil
+}
+
+// AddNewPeer adds a new peer to peer list, handles duplicates
+func (client *Client) AddNewPeer(newPeer *peer.Peer) {
+	for _, p := range client.PeerList {
+		if p.IP.String() == newPeer.IP.String() {
+			log.Println("Got duplicate peer:", newPeer)
+			return
+		}
+	}
+	client.PeerList = append(client.PeerList, newPeer)	
 }
 
 // TODO - optimize this, currently runs in O(n) where n = num pieces

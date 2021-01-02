@@ -56,6 +56,7 @@ type Node struct {
 	sentQueries map[string]krpcQuery // stores past queries sent to this node by me, key: transaction id
 	counter     int                  // transaction id counter
 	lastContact time.Time            // Used for LRU cache buckets in rtable
+	inserted	bool				 // whether node is inserted into Rtable
 }
 
 // NewNode creates a new node
@@ -66,6 +67,7 @@ func NewNode(id [20]byte, addr net.UDPAddr) *Node {
 		sentQueries: make(map[string]krpcQuery),
 		counter:     0,
 		lastContact: time.Now(),
+		inserted:    false,
 	}
 }
 
@@ -163,6 +165,11 @@ func parseUDPAddress(addrStr string) (net.IP, uint16, error) {
 	ip := net.IP([]byte(addrStr[0:4]))
 	port := binary.BigEndian.Uint16([]byte(addrStr[4:6]))
 	return ip, port, nil
+}
+
+func parseAddress(port string) string {
+	return fmt.Sprintf("%d.%d.%d.%d:%d", port[0], port[1], port[2], port[3],
+	(uint16(port[4])<<8)|uint16(port[5]))
 }
 
 func parsePeerStr(peerStr string) (Peer, error) {
