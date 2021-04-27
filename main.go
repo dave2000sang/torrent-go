@@ -1,21 +1,22 @@
 package main
 
 import (
-	"torrent-go/client"
-	"torrent-go/torrent"
-	"torrent-go/peer"
 	"log"
 	"time"
+	"torrent-go/client"
 	"torrent-go/dht"
+	"torrent-go/peer"
+	"torrent-go/torrent"
 )
+
 // TEST flag
 const TEST = true
 // UseDHT flag
 const UseDHT = true
 // FoundPeerMin is the minimum number of peers for DHT to fetch
-const FoundPeerMin = 20
+const FoundPeerMin = 30
 // PeerConcurrentLimit is max number of goroutines to run concurrently
-const PeerConcurrentLimit = 20
+const PeerConcurrentLimit = 30
 
 func main() {
 	log.Println("TEST = ", TEST)
@@ -44,7 +45,7 @@ func main() {
 		for {
 			select {
 			case foundPeer := <-myDHT.FoundPeers:
-				newPeer, _ := peer.NewPeer(foundPeer.IP, foundPeer.Port)
+				newPeer, _ := peer.NewPeer(foundPeer.IP, foundPeer.Port, client.TorrentFile.NumPieces)
 				log.Println("FOUND PEER ", newPeer)
 				client.AddNewPeer(newPeer)
 				log.Println("TOTAL NUM PEERS:", len(client.PeerList))

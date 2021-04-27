@@ -18,7 +18,6 @@ import (
 	"torrent-go/peer"
 	"torrent-go/piece"
 	"torrent-go/torrent"
-	"torrent-go/utils"
 
 	"github.com/jackpal/bencode-go"
 )
@@ -136,9 +135,8 @@ func (client *Client) ConnectTracker() {
 	for i := 0; i < len(peers)-6; i += 6 {
 		ip := net.IP([]byte(peers[i : i+4]))
 		port := binary.BigEndian.Uint16([]byte(peers[i+4 : i+6]))
-		newPeer, _ := peer.NewPeer(ip, port)
+		newPeer, _ := peer.NewPeer(ip, port, client.TorrentFile.NumPieces)
 		// Initialize peer.HavePieces to size <num pieces>/8
-		newPeer.HavePieces = make([]byte, utils.DivisionCeil(client.TorrentFile.NumPieces, 8))
 		client.PeerList = append(client.PeerList, newPeer)
 	}
 }
@@ -265,7 +263,8 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 			return err
 		}
 		if msgID != 7 {
-			return errors.New("Peer did not respond with piece message")
+			log.Println("startDownload: peer sent message id: ", msgID)
+			return errors.New("peer did not respond with piece message")
 		}
 
 		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])

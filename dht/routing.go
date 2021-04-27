@@ -23,7 +23,7 @@ type RoutingTable struct {
 type bucket struct {
 	minValue [20]byte // min ID value, inclusive
 	maxValue [20]byte // max ID value, exclusive
-	items    []*Node
+	items    []*Node  // nodes are sorted by LRU (least recently used first, most recent last)
 }
 
 
@@ -102,8 +102,12 @@ func (rtable *RoutingTable) insertNode(newNode *Node) error {
 			rtable.insertNode(newNode)
 		} else {
 			// For now, just replace the LRU node with newNode (instead of cases 2 and 3)
-			nodeLRU, indexLRU := getLRUNodeInBucket(curBucket.items)
-			curBucket.items[indexLRU] = newNode
+			// Least recently used node is the first node in bucket (sorted)
+			nodeLRU := curBucket.items[0]
+			// Pop first element
+			curBucket.items = curBucket.items[1:]
+			// Insert newNode at end
+			curBucket.items = append(curBucket.items, newNode)
 			newNode.inserted = true
 
 			// delete nodeLRU from rtable

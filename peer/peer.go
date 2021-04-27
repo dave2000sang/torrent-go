@@ -3,6 +3,7 @@ package peer
 import (
 	"bytes"
 	"io"
+
 	// "io/ioutil"
 	"encoding/binary"
 	"errors"
@@ -14,7 +15,7 @@ import (
 )
 
 // MaxListenAttempts before timing out
-const MaxListenAttempts = 3
+const MaxListenAttempts = 100
 
 // Peer represents a seeder
 type Peer struct {
@@ -35,9 +36,10 @@ type Status struct {
 }
 
 // NewPeer creates a new Peer instance
-func NewPeer(ip net.IP, port uint16) (*Peer, error) {
+func NewPeer(ip net.IP, port uint16, numPieces int) (*Peer, error) {
 	// Set initial status with AmInterested true
 	peer := Peer{ip, port, Status{true, false, true, false}, []byte{}, nil}
+	peer.HavePieces = make([]byte, utils.DivisionCeil(numPieces, 8))
 	return &peer, nil
 }
 
@@ -103,7 +105,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte, UseDHT bool) error {
 	maxAttempts, retryAttempts := 2, 0
 	for {
 		if retryAttempts >= maxAttempts {
-			return errors.New("Timeout, skipping")
+			return errors.New("timeout, skipping")
 		}
 		n, err := io.ReadFull(conn, buf)
 		utils.CheckPrintln(err, n, len(buf))
@@ -162,14 +164,14 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte, UseDHT bool) error {
 		return err
 	}
 	peer.Status.AmInterested = true
-	log.Println("Sent interested msg")
+	// log.Println("Sent interested msg")
 
 	// Listen for messages until peer unchokes
 	listenAttempt := 0
 	for {
-		log.Println("listen unchoke attempt: ", listenAttempt)
+		// log.Println("listen unchoke attempt: ", listenAttempt)
 		if listenAttempt >= MaxListenAttempts {
-			return errors.New("Max attempts exceeded while reading messages, skipping")
+			return errors.New("max attempts exceeded while reading messages, skipping")
 		}
 		msgID, msgPayload, err := peer.ReadMessage(conn)
 		if err != nil {
@@ -181,7 +183,7 @@ func (peer *Peer) DoHandshake(infoHash, clientID [20]byte, UseDHT bool) error {
 		}
 		// Break if peer unchokes
 		if !peer.Status.PeerChocking {
-			log.Println("Peer unchocked me!")
+			log.Printf("Peer [%s] unchocked me!\n", peer.IP.String())
 			break
 		}
 		listenAttempt++
@@ -201,7 +203,7 @@ func (peer *Peer) ReadMessage(conn *net.TCPConn) (int, []byte, error) {
 	maxAttempts, retryAttempts, delayDuration := 3, 0, time.Duration(15)
 	for {
 		if retryAttempts >= maxAttempts {
-			return 0, nil, errors.New("Timeout listening for message")
+			return 0, nil, errors.New("timeout listening for message")
 		}
 		n, err := io.ReadFull(conn, msgLength[:])
 		if err != nil {
@@ -252,22 +254,24 @@ func (peer *Peer) HandleMessage(messageID int, payload []byte, requestMsg []byte
 		peer.HavePieces[byteIndex] = updateBitfield(pieceIndex, peer.HavePieces[byteIndex])
 	case 5: // bitfield
 		if len(payload) != len(peer.HavePieces) {
-			return errors.New("Peer bitfield message length mismatch")
+			return errors.New("peer bitfield message length mismatch")
 		}
 		peer.HavePieces = payload
 	case 6: // request
-		return errors.New("Received unexpected REQUEST message from peer, skipping")
+		return errors.New("received unexpected REQUEST message from peer, skipping")
 	case 7: // piece
 		// Should not receive a piece message here in first message
-		return errors.New("Received unexpected PIECE message from peer, skipping")
+		return errors.New("received unexpected PIECE message from peer, skipping")
 	case 8: // cancel
 		// TODO - implement me
-		return errors.New("Received unexpected CANCEL message from peer, skipping")
+		return errors.New("received unexpected CANCEL message from peer, skipping")
 	case 9: // port
 		// TODO - implement me
-		return errors.New("Received unexpected PORT message from peer, skipping")
+		// return errors.New("received unexpected PORT message from peer, skipping")
+		log.Printf("Got PORT %d message\n", binary.BigEndian.Uint16(payload))
+		return nil
 	default:
-		return errors.New("Invalid message ID, skipping")
+		return errors.New("invalid message ID, skipping")
 	}
 	return nil
 }

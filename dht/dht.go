@@ -88,6 +88,7 @@ func (dht *DHT) Start() error {
 func (dht *DHT) Stop() {
 	log.Println("Stopping DHT node")
 	log.Println("===========================================================================")
+	log.Println("===========================================================================")
 	dht.stopDHT <- true
 }
 
@@ -179,7 +180,8 @@ func (dht *DHT) refreshNodes() {
 		if len(curBucket.items) > 0 {
 			targetNodeID := generateRandomNodeID(curBucket.minValue, curBucket.maxValue)
 			log.Printf("Refreshing bucket %v with target node %v\n", i, targetNodeID)
-			dht.findNode(curBucket.items[0], targetNodeID)
+			// Refresh using most recent node
+			dht.findNode(curBucket.items[len(curBucket.items)-1], targetNodeID)
 		} else {
 			log.Println("Refresh skipping empty bucket index", i)
 		}
