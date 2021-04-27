@@ -18,7 +18,6 @@ import (
 	"torrent-go/peer"
 	"torrent-go/piece"
 	"torrent-go/torrent"
-	"torrent-go/utils"
 
 	"github.com/jackpal/bencode-go"
 )
@@ -80,7 +79,7 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 				// log.Println("Piece [", i, "] missing")
 			}
 		}
-		log.Println("Previously downloaded pieces: ", havePieces)
+		// log.Println("Previously downloaded pieces: ", havePieces)
 	}
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -136,15 +135,14 @@ func (client *Client) ConnectTracker() {
 	for i := 0; i < len(peers)-6; i += 6 {
 		ip := net.IP([]byte(peers[i : i+4]))
 		port := binary.BigEndian.Uint16([]byte(peers[i+4 : i+6]))
-		newPeer, _ := peer.NewPeer(ip, port)
+		newPeer, _ := peer.NewPeer(ip, port, client.TorrentFile.NumPieces)
 		// Initialize peer.HavePieces to size <num pieces>/8
-		newPeer.HavePieces = make([]byte, utils.DivisionCeil(client.TorrentFile.NumPieces, 8))
 		client.PeerList = append(client.PeerList, newPeer)
 	}
 }
 
 // ConnectPeers connects to each peer, initiates handshake
-func (client *Client) ConnectPeers() {
+func (client *Client) ConnectPeers(UseDHT bool) {
 	pieceQueue := make(chan *piece.Piece)
 	results := make(chan *piece.Piece)
 
@@ -159,7 +157,7 @@ func (client *Client) ConnectPeers() {
 
 	// Trigger main worker to handshake and download pieces concurrently
 	for _, peer := range client.PeerList {
-		go client.mainWorker(peer, pieceQueue, results)
+		go client.mainWorker(peer, pieceQueue, results, UseDHT)
 	}
 	
 	// listen for finished download pieces
@@ -179,10 +177,10 @@ func (client *Client) ConnectPeers() {
 }
 
 // mainWorker is run concurrently with ConnectPeers()
-func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piece.Piece) {
+func (client *Client) mainWorker(peer *peer.Peer, pieceQueue, results chan *piece.Piece, UseDHT bool) {
 	log.Println("Running mainWorker on peer", peer.IP)
 	// handshake with peer
-	err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID)
+	err := peer.DoHandshake(client.TorrentFile.InfoHash, client.ID, UseDHT)
 	if err != nil {
 		log.Println(err)
 		return
@@ -265,7 +263,8 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 			return err
 		}
 		if msgID != 7 {
-			return errors.New("Peer did not respond with piece message")
+			log.Println("startDownload: peer sent message id: ", msgID)
+			return errors.New("peer did not respond with piece message")
 		}
 
 		curPiece.UpdatePieceWithBlock(msgPayload, requestMsg[5:])
@@ -276,6 +275,17 @@ func (client *Client) startDownload(peer *peer.Peer, curPiece *piece.Piece) erro
 	curPiece.IsDownloading = false
 	log.Println("Finished downloading piece: ", pieceIndex)
 	return nil
+}
+
+// AddNewPeer adds a new peer to peer list, handles duplicates
+func (client *Client) AddNewPeer(newPeer *peer.Peer) {
+	for _, p := range client.PeerList {
+		if p.IP.String() == newPeer.IP.String() {
+			log.Println("Got duplicate peer:", newPeer)
+			return
+		}
+	}
+	client.PeerList = append(client.PeerList, newPeer)	
 }
 
 // TODO - optimize this, currently runs in O(n) where n = num pieces
