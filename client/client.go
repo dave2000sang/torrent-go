@@ -60,20 +60,16 @@ func NewClient(curTorrent torrent.Torrent) (*Client, error) {
 		}
 		if len(oldContent) != curTorrent.FileLength {
 			log.Println(len(oldContent), " != ", curTorrent.FileLength)
-			return nil, fmt.Errorf("Error: existing file %s does not match length specified in torrent file", filePath)
+			return nil, fmt.Errorf("existing file %s does not match length specified in torrent file", filePath)
 		}
 		// Update client pieces info with existing pieces
 		pieceLength := curTorrent.PieceLength
 		emptyPiece := make([]byte, pieceLength)
-		havePieces := []int{}
+		// havePieces := []int{}
 		for i := 0; i < curTorrent.NumPieces-1; i++ {
-			var existingPiece []byte
-			if i == curTorrent.NumPieces-1 {
-				existingPiece = oldContent[i*pieceLength:]
-			}
-			existingPiece = oldContent[i*pieceLength : i*pieceLength+pieceLength]
-			if !bytes.Equal(existingPiece, emptyPiece) {
-				havePieces = append(havePieces, i)
+			if !bytes.Equal(oldContent[i*pieceLength : (i+1)*pieceLength], emptyPiece) {
+				// havePieces = append(havePieces, i)
+				log.Println("already have piece: ", i);
 				piecesList[i].IsComplete = true
 			} else {
 				// log.Println("Piece [", i, "] missing")
@@ -142,6 +138,7 @@ func (client *Client) ConnectTracker() {
 }
 
 // ConnectPeers connects to each peer, initiates handshake
+// Uses 2 piece queues, one for sending pieces to download, one for receiving downloaded pieces
 func (client *Client) ConnectPeers(UseDHT bool) {
 	pieceQueue := make(chan *piece.Piece)
 	results := make(chan *piece.Piece)
@@ -217,7 +214,7 @@ func (client *Client) verifyPieceAndWriteDisk(piece *piece.Piece) error {
 		}
 		return nil
 	}
-	return errors.New("Error: piece does not match SHA1 hash")
+	return errors.New("piece does not match SHA1 hash")
 }
 
 // startDownload begins downloading piece from peer

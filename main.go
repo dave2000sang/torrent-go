@@ -12,7 +12,7 @@ import (
 // TEST flag
 const TEST = true
 // UseDHT flag
-const UseDHT = true
+const UseDHT = false
 // FoundPeerMin is the minimum number of peers for DHT to fetch
 const FoundPeerMin = 30
 // PeerConcurrentLimit is max number of goroutines to run concurrently
@@ -21,7 +21,7 @@ const PeerConcurrentLimit = 30
 func main() {
 	log.Println("TEST = ", TEST)
 	log.Println("UseDHT = ", UseDHT)
-	file := "example_torrents/ubuntu-20.04.1-desktop-amd64.iso.torrent"
+	file := "example_torrents/ubuntu-21.04-desktop-amd64.iso.torrent"
 	// Create a new Client
 	curTorrent, err := torrent.ReadTorrentFile(file)
 	if err != nil {
